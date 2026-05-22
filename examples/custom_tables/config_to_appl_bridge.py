@@ -68,10 +68,15 @@ def main():
         default=1.0,
         help="seconds between CONFIG_DB polls when --watch is used",
     )
+    parser.add_argument(
+        "--tcp",
+        action="store_true",
+        help="connect to Redis by TCP instead of the SONiC Unix socket",
+    )
     args = parser.parse_args()
 
-    config_db = swsscommon.DBConnector("CONFIG_DB", 0, True)
-    appl_db = swsscommon.DBConnector("APPL_DB", 0, True)
+    config_db = swsscommon.DBConnector("CONFIG_DB", 0, args.tcp)
+    appl_db = swsscommon.DBConnector("APPL_DB", 0, args.tcp)
     config_table = swsscommon.Table(config_db, CONFIG_TABLE)
     appl_table = swsscommon.Table(appl_db, APPL_TABLE)
 

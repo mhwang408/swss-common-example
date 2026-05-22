@@ -14,13 +14,36 @@ CONFIG_DB keys use `|` and APPL_DB keys use `:`.
 
 ## Run
 
-Run on a SONiC image or an environment where `swsscommon` and Redis DB config
-are available.
+`sonic-swss-common` is only the client library. The Redis server for SONiC DBs
+is normally owned by the SONiC `database` container, so the scripts also need:
+
+- the Python `swsscommon` package available in the runtime environment
+- `/var/run/redis/sonic-db/database_config.json`
+- access to `/var/run/redis/redis.sock`, or TCP access to the Redis instance
+
+On a SONiC switch or SONiC VS image, run these from a container/namespace that
+has the Redis socket mounted. The scripts use the Unix socket by default.
 
 ```bash
 cd /home/ubuntu/ows-example
 python3 examples/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 python3 examples/custom_tables/config_to_appl_bridge.py --key demo
+```
+
+If you intentionally run from an environment where Redis is reachable by TCP
+according to `database_config.json`, add `--tcp`:
+
+```bash
+python3 examples/custom_tables/config_db_producer.py --tcp --key demo
+python3 examples/custom_tables/config_to_appl_bridge.py --tcp --key demo
+```
+
+On SONiC, `redis-cli` can also be run through the `database` container when the
+host environment does not have direct socket access:
+
+```bash
+docker exec database redis-cli -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
+docker exec database redis-cli -n 0 HGETALL 'CUSTOM_APPL_TABLE:demo'
 ```
 
 To keep the bridge running and republish when config changes:
