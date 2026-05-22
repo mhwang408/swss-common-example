@@ -2,6 +2,13 @@ services:
   database:
     image: redis:7-alpine
     container_name: database
-    command: ["redis-server", "--databases", "32", "--appendonly", "no"]
+    command:
+      - "redis-server"
+      - "--databases"
+      - "32"
+      - "--appendonly"
+      - "no"
+      - "--notify-keyspace-events"
+      - "KEA"
     ports:
       - "6379:6379"

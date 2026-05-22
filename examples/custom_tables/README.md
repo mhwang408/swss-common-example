@@ -6,8 +6,9 @@ and one custom table in `APPL_DB`.
 The flow is:
 
 1. `config_db_producer.py` writes `CUSTOM_CONFIG_TABLE|demo` into `CONFIG_DB`.
-2. `config_to_appl_bridge.py` reads that CONFIG_DB entry and writes
-   `CUSTOM_APPL_TABLE:demo` into `APPL_DB`.
+2. `config_to_appl_bridge.py` subscribes to that CONFIG_DB table with
+   `SubscriberStateTable` and publishes `CUSTOM_APPL_TABLE:demo` into
+   `APPL_DB` with `ProducerStateTable`.
 
 `swsscommon.Table` uses the database separator from `database_config.json`, so
 CONFIG_DB keys use `|` and APPL_DB keys use `:`.
@@ -24,10 +25,18 @@ is normally owned by the SONiC `database` container, so the scripts also need:
 On a SONiC switch or SONiC VS image, run these from a container/namespace that
 has the Redis socket mounted. The scripts use the Unix socket by default.
 
+Terminal 1:
+
+```bash
+cd /home/ubuntu/ows-example
+python3 examples/custom_tables/config_to_appl_bridge.py --key demo --watch
+```
+
+Terminal 2:
+
 ```bash
 cd /home/ubuntu/ows-example
 python3 examples/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
-python3 examples/custom_tables/config_to_appl_bridge.py --key demo
 ```
 
 ## Run On A Host With Only A Database Container
@@ -43,7 +52,22 @@ cd /home/ubuntu/ows-example/examples/custom_tables
 docker compose up -d
 ```
 
-Then run the Python programs on the host, using TCP and the local DB config:
+Then run the bridge on the host, using TCP and the local DB config.
+
+Terminal 1:
+
+```bash
+cd /home/ubuntu/ows-example
+python3 examples/custom_tables/config_to_appl_bridge.py \
+  --tcp \
+  --db-config examples/custom_tables/database_config.local.json \
+  --key demo \
+  --watch
+```
+
+In another terminal, write CONFIG_DB:
+
+Terminal 2:
 
 ```bash
 cd /home/ubuntu/ows-example
@@ -53,11 +77,6 @@ python3 examples/custom_tables/config_db_producer.py \
   --key demo \
   --enabled true \
   --interval 10
-
-python3 examples/custom_tables/config_to_appl_bridge.py \
-  --tcp \
-  --db-config examples/custom_tables/database_config.local.json \
-  --key demo
 ```
 
 Verify through the container:
@@ -71,8 +90,8 @@ If you intentionally run from an environment where Redis is reachable by TCP
 according to `database_config.json`, add `--tcp`:
 
 ```bash
+python3 examples/custom_tables/config_to_appl_bridge.py --tcp --key demo --watch
 python3 examples/custom_tables/config_db_producer.py --tcp --key demo
-python3 examples/custom_tables/config_to_appl_bridge.py --tcp --key demo
 ```
 
 On SONiC, `redis-cli` can also be run through the `database` container when the
