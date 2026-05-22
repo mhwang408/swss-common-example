@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+#
+# Minimal producer for a custom CONFIG_DB table.
+#
+# Example Redis key:
+#   DB 4: CUSTOM_CONFIG_TABLE|demo
+
+import argparse
+import time
+
+from swsscommon import swsscommon
+
+
+CONFIG_TABLE = "CUSTOM_CONFIG_TABLE"
+
+
+def field_value_pairs(fields):
+    return swsscommon.FieldValuePairs([(str(k), str(v)) for k, v in fields.items()])
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Write one entry into a custom table in CONFIG_DB."
+    )
+    parser.add_argument("--key", default="demo", help="table entry key")
+    parser.add_argument("--enabled", default="true", help="sample config field")
+    parser.add_argument("--interval", default="10", help="sample config field")
+    args = parser.parse_args()
+
+    config_db = swsscommon.DBConnector("CONFIG_DB", 0, True)
+    config_table = swsscommon.Table(config_db, CONFIG_TABLE)
+
+    values = {
+        "enabled": args.enabled,
+        "interval": args.interval,
+        "updated_at": str(int(time.time())),
+    }
+    config_table.set(args.key, field_value_pairs(values))
+
+    print("Wrote CONFIG_DB entry")
+    print("  table: %s" % CONFIG_TABLE)
+    print("  key: %s" % args.key)
+    print("  redis key: %s|%s" % (CONFIG_TABLE, args.key))
+    for field, value in values.items():
+        print("  %s=%s" % (field, value))
+
+
+if __name__ == "__main__":
+    main()
