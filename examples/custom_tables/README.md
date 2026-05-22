@@ -30,6 +30,43 @@ python3 examples/custom_tables/config_db_producer.py --key demo --enabled true -
 python3 examples/custom_tables/config_to_appl_bridge.py --key demo
 ```
 
+## Run On A Host With Only A Database Container
+
+You do not need to run the full SONiC stack for this minimal example. A normal
+Redis container is enough because this example only uses Redis DB numbers and
+SONiC table separators.
+
+Start a local container named `database`:
+
+```bash
+cd /home/ubuntu/ows-example/examples/custom_tables
+docker compose up -d
+```
+
+Then run the Python programs on the host, using TCP and the local DB config:
+
+```bash
+cd /home/ubuntu/ows-example
+python3 examples/custom_tables/config_db_producer.py \
+  --tcp \
+  --db-config examples/custom_tables/database_config.local.json \
+  --key demo \
+  --enabled true \
+  --interval 10
+
+python3 examples/custom_tables/config_to_appl_bridge.py \
+  --tcp \
+  --db-config examples/custom_tables/database_config.local.json \
+  --key demo
+```
+
+Verify through the container:
+
+```bash
+docker exec database redis-cli -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
+docker exec database redis-cli -n 0 HGETALL 'CUSTOM_APPL_TABLE:demo'
+```
+
 If you intentionally run from an environment where Redis is reachable by TCP
 according to `database_config.json`, add `--tcp`:
 

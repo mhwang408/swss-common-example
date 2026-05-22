@@ -1,0 +1,7 @@
+services:
+  database:
+    image: redis:7-alpine
+    container_name: database
+    command: ["redis-server", "--databases", "32", "--appendonly", "no"]
+    ports:
+      - "6379:6379"

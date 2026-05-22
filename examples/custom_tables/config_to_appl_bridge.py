@@ -73,7 +73,14 @@ def main():
         action="store_true",
         help="connect to Redis by TCP instead of the SONiC Unix socket",
     )
+    parser.add_argument(
+        "--db-config",
+        help="path to database_config.json; useful when running Redis in a local host container",
+    )
     args = parser.parse_args()
+
+    if args.db_config:
+        swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
 
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, args.tcp)
     appl_db = swsscommon.DBConnector("APPL_DB", 0, args.tcp)
