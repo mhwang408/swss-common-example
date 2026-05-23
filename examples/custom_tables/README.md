@@ -108,10 +108,6 @@ If the host also has Python `swsscommon` installed, it can use the same socket:
 python3 examples/custom_tables/config_db_producer.py --key demo
 ```
 
-`database_config.local.json` is still useful if you intentionally do not use
-the shared `/var/run/redis/sonic-db/database_config.json` path, but the example
-programs still connect through the Unix socket.
-
 On SONiC, `redis-cli` can also be run through the `database` container when the
 host environment does not have direct socket access:
 
