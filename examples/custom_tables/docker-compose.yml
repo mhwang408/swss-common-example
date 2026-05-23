@@ -12,3 +12,14 @@ services:
       - "KEA"
     ports:
       - "6379:6379"
+
+  runner:
+    build:
+      context: ../..
+      dockerfile: examples/custom_tables/Dockerfile
+    image: ows-example-runner
+    depends_on:
+      - database
+    working_dir: /workspace
+    volumes:
+      - ../..:/workspace:ro

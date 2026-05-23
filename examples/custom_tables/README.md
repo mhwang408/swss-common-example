@@ -39,28 +39,32 @@ cd /home/ubuntu/ows-example
 python3 examples/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
-## Run On A Host With Only A Database Container
+## Run With Docker Only
 
 You do not need to run the full SONiC stack for this minimal example. A normal
 Redis container is enough because this example only uses Redis DB numbers and
-SONiC table separators.
+SONiC table separators. The compose file also provides a `runner` image that
+builds and installs `sonic-swss-common`, so the host does not need a Python venv
+or native build dependencies.
 
-Start a local container named `database`:
+Build the runner and start a local container named `database`:
 
 ```bash
 cd /home/ubuntu/ows-example/examples/custom_tables
+docker compose build runner
 docker compose up -d
 ```
 
-Then run the bridge on the host, using TCP and the local DB config.
+Then run the bridge in the runner container, using TCP and the compose DB config.
 
 Terminal 1:
 
 ```bash
 cd /home/ubuntu/ows-example
-python3 examples/custom_tables/config_to_appl_bridge.py \
+docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
+  python3 examples/custom_tables/config_to_appl_bridge.py \
   --tcp \
-  --db-config examples/custom_tables/database_config.local.json \
+  --db-config examples/custom_tables/database_config.compose.json \
   --key demo \
   --watch
 ```
@@ -71,9 +75,10 @@ Terminal 2:
 
 ```bash
 cd /home/ubuntu/ows-example
-python3 examples/custom_tables/config_db_producer.py \
+docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
+  python3 examples/custom_tables/config_db_producer.py \
   --tcp \
-  --db-config examples/custom_tables/database_config.local.json \
+  --db-config examples/custom_tables/database_config.compose.json \
   --key demo \
   --enabled true \
   --interval 10
@@ -83,8 +88,19 @@ Verify through the container:
 
 ```bash
 docker exec database redis-cli -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
-docker exec database redis-cli -n 0 HGETALL 'CUSTOM_APPL_TABLE:demo'
+docker exec database redis-cli -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
+docker exec database redis-cli -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
 ```
+
+`config_to_appl_bridge.py` uses `ProducerStateTable`, so it produces a pending
+APPL_DB update for the APPL table owner. The pending data lives under the
+underscore-prefixed hash plus the key set. A real APPL table owner would consume
+that with `ConsumerStateTable` and materialize the final
+`CUSTOM_APPL_TABLE:demo` hash.
+
+`database_config.local.json` is still useful when you intentionally run the
+Python programs on the host and connect to the Redis container through
+`127.0.0.1:6379`.
 
 If you intentionally run from an environment where Redis is reachable by TCP
 according to `database_config.json`, add `--tcp`:
@@ -112,7 +128,8 @@ python3 examples/custom_tables/config_to_appl_bridge.py --key demo --watch
 
 ```bash
 redis-cli -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
-redis-cli -n 0 HGETALL 'CUSTOM_APPL_TABLE:demo'
+redis-cli -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
+redis-cli -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
 ```
 
 Expected CONFIG_DB fields include:
@@ -123,7 +140,7 @@ interval
 updated_at
 ```
 
-Expected APPL_DB fields include:
+Expected pending APPL_DB fields include:
 
 ```text
 admin_status

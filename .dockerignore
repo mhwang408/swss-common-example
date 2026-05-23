@@ -1,0 +1,9 @@
+.git/
+.venv/
+sonic-swss-common/.git/
+sonic-swss-common/common/cfg_schema.h
+sonic-swss-common/**/*.o
+sonic-swss-common/**/*.lo
+sonic-swss-common/**/*.la
+sonic-swss-common/**/.deps/
+sonic-swss-common/**/.libs/

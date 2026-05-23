@@ -90,7 +90,7 @@ def main():
         if state != swsscommon.Select.OBJECT:
             continue
 
-        key, op, field_values = selectable.pop()
+        key, op, field_values = config_subscriber.pop()
         if key != args.key:
             continue
 
