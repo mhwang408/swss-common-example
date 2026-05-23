@@ -3,15 +3,23 @@ services:
     image: redis:7-alpine
     container_name: database
     command:
-      - "redis-server"
-      - "--databases"
-      - "32"
-      - "--appendonly"
-      - "no"
-      - "--notify-keyspace-events"
-      - "KEA"
-    ports:
-      - "6379:6379"
+      - "sh"
+      - "-c"
+      - >
+        mkdir -p /var/run/redis/sonic-db &&
+        cp /tmp/database_config.json /var/run/redis/sonic-db/database_config.json &&
+        chmod 755 /var/run/redis/sonic-db &&
+        chmod 644 /var/run/redis/sonic-db/database_config.json &&
+        exec redis-server
+        --port 0
+        --databases 32
+        --appendonly no
+        --notify-keyspace-events KEA
+        --unixsocket /var/run/redis/redis.sock
+        --unixsocketperm 777
+    volumes:
+      - /var/run/redis:/var/run/redis
+      - ./database_config.compose.json:/tmp/database_config.json:ro
 
   runner:
     build:
@@ -23,3 +31,4 @@ services:
     working_dir: /workspace
     volumes:
       - ../..:/workspace:ro
+      - /var/run/redis:/var/run/redis

@@ -20,7 +20,7 @@ is normally owned by the SONiC `database` container, so the scripts also need:
 
 - the Python `swsscommon` package available in the runtime environment
 - `/var/run/redis/sonic-db/database_config.json`
-- access to `/var/run/redis/redis.sock`, or TCP access to the Redis instance
+- access to `/var/run/redis/redis.sock`
 
 On a SONiC switch or SONiC VS image, run these from a container/namespace that
 has the Redis socket mounted. The scripts use the Unix socket by default.
@@ -51,11 +51,19 @@ Build the runner and start a local container named `database`:
 
 ```bash
 cd /home/ubuntu/ows-example/examples/custom_tables
+sudo mkdir -p /var/run/redis
 docker compose build runner
 docker compose up -d
 ```
 
-Then run the bridge in the runner container, using TCP and the compose DB config.
+The compose file bind-mounts host `/var/run/redis` into both `database` and
+`runner`. Redis creates `/var/run/redis/redis.sock`, so the host and other
+containers can use the same Unix socket. The `database` container also copies
+the compose DB config into `/var/run/redis/sonic-db/database_config.json`, which
+is the default path used by `swsscommon`. TCP is disabled in this local setup.
+
+Then run the bridge in the runner container, using the shared Redis socket and
+the compose DB config.
 
 Terminal 1:
 
@@ -63,8 +71,6 @@ Terminal 1:
 cd /home/ubuntu/ows-example
 docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
   python3 examples/custom_tables/config_to_appl_bridge.py \
-  --tcp \
-  --db-config examples/custom_tables/database_config.compose.json \
   --key demo \
   --watch
 ```
@@ -77,8 +83,6 @@ Terminal 2:
 cd /home/ubuntu/ows-example
 docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
   python3 examples/custom_tables/config_db_producer.py \
-  --tcp \
-  --db-config examples/custom_tables/database_config.compose.json \
   --key demo \
   --enabled true \
   --interval 10
@@ -87,9 +91,9 @@ docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
 Verify through the container:
 
 ```bash
-docker exec database redis-cli -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
-docker exec database redis-cli -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
-docker exec database redis-cli -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
 ```
 
 `config_to_appl_bridge.py` uses `ProducerStateTable`, so it produces a pending
@@ -98,24 +102,22 @@ underscore-prefixed hash plus the key set. A real APPL table owner would consume
 that with `ConsumerStateTable` and materialize the final
 `CUSTOM_APPL_TABLE:demo` hash.
 
-`database_config.local.json` is still useful when you intentionally run the
-Python programs on the host and connect to the Redis container through
-`127.0.0.1:6379`.
-
-If you intentionally run from an environment where Redis is reachable by TCP
-according to `database_config.json`, add `--tcp`:
+If the host also has Python `swsscommon` installed, it can use the same socket:
 
 ```bash
-python3 examples/custom_tables/config_to_appl_bridge.py --tcp --key demo --watch
-python3 examples/custom_tables/config_db_producer.py --tcp --key demo
+python3 examples/custom_tables/config_db_producer.py --key demo
 ```
+
+`database_config.local.json` is still useful if you intentionally do not use
+the shared `/var/run/redis/sonic-db/database_config.json` path, but the example
+programs still connect through the Unix socket.
 
 On SONiC, `redis-cli` can also be run through the `database` container when the
 host environment does not have direct socket access:
 
 ```bash
-docker exec database redis-cli -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
-docker exec database redis-cli -n 0 HGETALL 'CUSTOM_APPL_TABLE:demo'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
 ```
 
 To keep the bridge running and republish when config changes:
@@ -127,9 +129,9 @@ python3 examples/custom_tables/config_to_appl_bridge.py --key demo --watch
 ## Verify With redis-cli
 
 ```bash
-redis-cli -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
-redis-cli -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
-redis-cli -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
+redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
+redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
+redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
 ```
 
 Expected CONFIG_DB fields include:

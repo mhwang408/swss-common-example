@@ -26,11 +26,6 @@ def main():
     parser.add_argument("--enabled", default="true", help="sample config field")
     parser.add_argument("--interval", default="10", help="sample config field")
     parser.add_argument(
-        "--tcp",
-        action="store_true",
-        help="connect to Redis by TCP instead of the SONiC Unix socket",
-    )
-    parser.add_argument(
         "--db-config",
         help="path to database_config.json; useful when running Redis in a local host container",
     )
@@ -39,7 +34,7 @@ def main():
     if args.db_config:
         swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
 
-    config_db = swsscommon.DBConnector("CONFIG_DB", 0, args.tcp)
+    config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
     config_table = swsscommon.Table(config_db, CONFIG_TABLE)
 
     values = {
