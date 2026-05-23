@@ -45,6 +45,9 @@ RUN cd /tmp/sonic-swss-common \
 RUN mkdir -p /usr/share \
     && ln -s /usr/local/share/swss /usr/share/swss
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /workspace
 
-CMD ["python3", "examples/custom_tables/config_db_producer.py", "--help"]
+ENTRYPOINT ["python3", "examples/custom_tables/config_to_appl_bridge.py"]
+CMD ["--key", "demo", "--watch"]

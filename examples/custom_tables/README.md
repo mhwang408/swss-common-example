@@ -43,10 +43,7 @@ Terminal 1:
 
 ```bash
 cd /home/ubuntu/ows-example
-docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
-  python3 examples/custom_tables/config_to_appl_bridge.py \
-  --key demo \
-  --watch
+docker compose -f examples/custom_tables/docker-compose.yml run --rm runner
 ```
 
 In another terminal, write CONFIG_DB:
@@ -55,8 +52,10 @@ Terminal 2:
 
 ```bash
 cd /home/ubuntu/ows-example
-docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
-  python3 examples/custom_tables/config_db_producer.py \
+docker compose -f examples/custom_tables/docker-compose.yml run --rm \
+  --entrypoint python3 \
+  runner \
+  examples/custom_tables/config_db_producer.py \
   --key demo \
   --enabled true \
   --interval 10
@@ -80,10 +79,7 @@ To keep the bridge running and republish when config changes:
 
 ```bash
 cd /home/ubuntu/ows-example
-docker compose -f examples/custom_tables/docker-compose.yml run --rm runner \
-  python3 examples/custom_tables/config_to_appl_bridge.py \
-  --key demo \
-  --watch
+docker compose -f examples/custom_tables/docker-compose.yml run --rm runner
 ```
 
 ## Run On SONiC Or Host With swsscommon
