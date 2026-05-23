@@ -19,7 +19,7 @@ services:
         --unixsocketperm 777
     volumes:
       - /var/run/redis:/var/run/redis
-      - ./database_config.compose.json:/tmp/database_config.json:ro
+      - ./database_config.json:/tmp/database_config.json:ro
 
   runner:
     build:
