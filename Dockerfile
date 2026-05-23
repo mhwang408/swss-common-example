@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     uuid-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY sonic-swss-common /tmp/sonic-swss-common
+COPY src/sonic-swss-common /tmp/sonic-swss-common
 
 RUN cd /tmp/sonic-swss-common \
     && ./autogen.sh \
@@ -49,5 +49,5 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /workspace
 
-ENTRYPOINT ["python3", "examples/custom_tables/config_to_appl_bridge.py"]
-CMD ["--key", "demo", "--watch"]
+ENTRYPOINT ["python3", "config_to_appl_bridge.py"]
+CMD ["--key", "demo", "--watch", "--db-config", "/tmp/database_config.json"]

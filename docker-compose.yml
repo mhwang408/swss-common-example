@@ -23,12 +23,13 @@ services:
 
   runner:
     build:
-      context: ../..
-      dockerfile: examples/custom_tables/Dockerfile
+      context: .
+      dockerfile: ./Dockerfile
     image: ows-example-runner
     depends_on:
       - database
     working_dir: /workspace
     volumes:
-      - ../..:/workspace:ro
+      - ./src/custom_tables:/workspace:ro
       - /var/run/redis:/var/run/redis
+      - ./database_config.json:/tmp/database_config.json:ro
