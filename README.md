@@ -24,10 +24,10 @@ or native build dependencies.
 Build the runner and start a local container named `database`:
 
 ```bash
-cd /home/ubuntu/ows-example/examples/custom_tables
+cd /home/ubuntu/ows-example
 sudo mkdir -p /var/run/redis
-docker compose build runner
-docker compose up -d
+docker compose -f examples/custom_tables/docker-compose.yml build runner
+docker compose -f examples/custom_tables/docker-compose.yml up -d
 ```
 
 The compose file bind-mounts host `/var/run/redis` into both `database` and
