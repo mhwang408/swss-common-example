@@ -3,23 +3,22 @@ services:
     image: redis:7-alpine
     container_name: database
     command:
-      - "sh"
-      - "-c"
-      - >
-        mkdir -p /var/run/redis/sonic-db &&
-        cp /tmp/database_config.json /var/run/redis/sonic-db/database_config.json &&
-        chmod 755 /var/run/redis/sonic-db &&
-        chmod 644 /var/run/redis/sonic-db/database_config.json &&
-        exec redis-server
-        --port 0
-        --databases 32
-        --appendonly no
-        --notify-keyspace-events KEA
-        --unixsocket /var/run/redis/redis.sock
-        --unixsocketperm 777
+      - "redis-server"
+      - "--port"
+      - "0"
+      - "--databases"
+      - "32"
+      - "--appendonly"
+      - "no"
+      - "--notify-keyspace-events"
+      - "KEA"
+      - "--unixsocket"
+      - "/var/run/redis/redis.sock"
+      - "--unixsocketperm"
+      - "777"
     volumes:
       - /var/run/redis:/var/run/redis
-      - ./database_config.json:/tmp/database_config.json:ro
+      - ./database_config.json:/var/run/redis/sonic-db/database_config.json:ro
 
   runner:
     build:
@@ -28,8 +27,12 @@ services:
     image: ows-example-runner
     depends_on:
       - database
-    working_dir: /workspace
+    working_dir: /home/ubuntu/ows-example
     volumes:
-      - ./src/custom_tables:/workspace:ro
+      - .:/home/ubuntu/ows-example
+      - swss-common-install:/usr/local
       - /var/run/redis:/var/run/redis
-      - ./database_config.json:/tmp/database_config.json:ro
+      - ./database_config.json:/var/run/redis/sonic-db/database_config.json:ro
+
+volumes:
+  swss-common-install:

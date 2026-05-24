@@ -21,9 +21,10 @@ APIs, and reasoning about Redis/Lua atomicity are in
 
 You do not need to run the full SONiC stack for this minimal example. A normal
 Redis container is enough because this example only uses Redis DB numbers and
-SONiC table separators. The compose file also provides a `runner` image that
-builds and installs `sonic-swss-common`, so the host does not need a Python venv
-or native build dependencies.
+SONiC table separators. The compose file provides a `runner` image with build
+dependencies; `src/sonic-swss-common` and `database_config.json` are
+bind-mounted (not copied into the image), so edits to either take effect on the
+next container run without rebuilding.
 
 Build the runner and start a local container named `database`:
 
@@ -36,9 +37,25 @@ docker compose up -d
 
 The compose file bind-mounts host `/var/run/redis` into both `database` and
 `runner`. Redis creates `/var/run/redis/redis.sock`, so the host and other
-containers can use the same Unix socket. The `database` container also copies
-the compose DB config into `/var/run/redis/sonic-db/database_config.json`, which
-is the default path used by `swsscommon`. TCP is disabled in this local setup.
+containers can use the same Unix socket. `database_config.json` is bind-mounted
+directly into `/var/run/redis/sonic-db/database_config.json`, which is the
+default path used by `swsscommon`. TCP is disabled in this local setup.
+
+The first `docker compose run` compiles `sonic-swss-common` from the mounted
+source. The compiled output is stored in a named volume (`swss-common-install`)
+so subsequent runs skip the build. To force a rebuild after changing
+`src/sonic-swss-common`:
+
+```bash
+docker volume rm ows-example_swss-common-install
+```
+
+To rebuild the runner image itself (e.g. after changing `entrypoint.sh` or
+`Dockerfile`):
+
+```bash
+docker compose build --no-cache runner
+```
 
 Then run the bridge in the runner container, using the shared Redis socket and
 the compose DB config.
@@ -59,11 +76,10 @@ cd /home/ubuntu/ows-example
 docker compose run --rm \
   --entrypoint python3 \
   runner \
-  config_db_producer.py \
+  src/custom_tables/config_db_producer.py \
   --key demo \
   --enabled true \
-  --interval 10 \
-  --db-config /tmp/database_config.json
+  --interval 10
 ```
 
 Verify through the container:

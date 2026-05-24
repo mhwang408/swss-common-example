@@ -7,6 +7,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib
 RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf \
     automake \
+    bear \
     build-essential \
     ca-certificates \
     debhelper \
@@ -31,23 +32,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     uuid-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY src/sonic-swss-common /tmp/sonic-swss-common
-
-RUN cd /tmp/sonic-swss-common \
-    && ./autogen.sh \
-    && PYTHON3=/usr/bin/python3 ./configure \
-        --prefix=/usr/local \
-        --disable-python2 \
-        --disable-yangmodules \
-    && make -j"$(nproc)" install \
-    && rm -rf /tmp/sonic-swss-common
-
 RUN mkdir -p /usr/share \
     && ln -s /usr/local/share/swss /usr/share/swss
 
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 ENV PYTHONUNBUFFERED=1
 
-WORKDIR /workspace
+WORKDIR /home/ubuntu/ows-example
 
-ENTRYPOINT ["python3", "config_to_appl_bridge.py"]
-CMD ["--key", "demo", "--watch", "--db-config", "/tmp/database_config.json"]
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python3", "src/custom_tables/config_to_appl_bridge.py", "--key", "demo", "--watch"]
