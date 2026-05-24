@@ -13,6 +13,10 @@ The flow is:
 `swsscommon.Table` uses the database separator from `database_config.json`, so
 CONFIG_DB keys use `|` and APPL_DB keys use `:`.
 
+Detailed notes on defining custom table names, choosing `swsscommon` table
+APIs, and reasoning about Redis/Lua atomicity are in
+[docs/sonic-swss-common-redis-tables.md](docs/sonic-swss-common-redis-tables.md).
+
 ## Run
 
 You do not need to run the full SONiC stack for this minimal example. A normal
@@ -26,8 +30,8 @@ Build the runner and start a local container named `database`:
 ```bash
 cd /home/ubuntu/ows-example
 sudo mkdir -p /var/run/redis
-docker compose -f examples/custom_tables/docker-compose.yml build runner
-docker compose -f examples/custom_tables/docker-compose.yml up -d
+docker compose build runner
+docker compose up -d
 ```
 
 The compose file bind-mounts host `/var/run/redis` into both `database` and
@@ -43,7 +47,7 @@ Terminal 1:
 
 ```bash
 cd /home/ubuntu/ows-example
-docker compose -f examples/custom_tables/docker-compose.yml run --rm runner
+docker compose run --rm runner
 ```
 
 In another terminal, write CONFIG_DB:
@@ -52,13 +56,14 @@ Terminal 2:
 
 ```bash
 cd /home/ubuntu/ows-example
-docker compose -f examples/custom_tables/docker-compose.yml run --rm \
+docker compose run --rm \
   --entrypoint python3 \
   runner \
-  examples/custom_tables/config_db_producer.py \
+  config_db_producer.py \
   --key demo \
   --enabled true \
-  --interval 10
+  --interval 10 \
+  --db-config /tmp/database_config.json
 ```
 
 Verify through the container:
@@ -79,7 +84,7 @@ To keep the bridge running and republish when config changes:
 
 ```bash
 cd /home/ubuntu/ows-example
-docker compose -f examples/custom_tables/docker-compose.yml run --rm runner
+docker compose run --rm runner
 ```
 
 ## Run On SONiC Or Host With swsscommon
@@ -99,14 +104,14 @@ Terminal 1:
 
 ```bash
 cd /home/ubuntu/ows-example
-python3 examples/custom_tables/config_to_appl_bridge.py --key demo --watch
+python3 src/custom_tables/config_to_appl_bridge.py --key demo --watch
 ```
 
 Terminal 2:
 
 ```bash
 cd /home/ubuntu/ows-example
-python3 examples/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
+python3 src/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
 On SONiC, `redis-cli` can also be run through the `database` container when the
