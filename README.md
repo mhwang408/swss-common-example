@@ -224,6 +224,27 @@ the update, and logs a fake ASIC write.
 All four scripts log DB table reads and writes to
 `/var/run/redis/vlan_table_db.log` by default. Override it with `--log-file`.
 
+For a one-command verification run that also captures timestamped Redis
+`MONITOR` output:
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/verify_vlan_flow.sh 100
+```
+
+The script clears DB 0, DB 1, and DB 4, runs the VLAN flow in this order, and
+prints the DB state after each step:
+
+```text
+config command -> CONFIG_DB check -> vlanmgrd -> APPL_DB check -> vlanorch -> ASIC_DB check -> syncd
+```
+
+It also writes a full Redis command trace to `/tmp/swss_vlan_monitor_*.log`.
+The trace includes `__VERIFY_MARKER:*` `HSET` events immediately before and
+after each important `swsscommon` API call, making it easy to see which Redis
+operations happened inside `Table.set`, `ProducerStateTable.set`,
+`ConsumerStateTable.pop`, `ProducerTable.set`, and `ConsumerTable.pop`.
+
 Start the local Redis and runner as shown above, then use four terminals:
 
 Terminal 1, tiny syncd:
