@@ -34,28 +34,26 @@ The underscore-prefixed APPL_DB hash and key set are produced by
 ## Where To Define A Table
 
 For a project-local custom table, do not modify the `sonic-swss-common`
-submodule. Keep the table names in project code, for example:
-
-- `src/custom_tables/ows_schema.h`
-- Python constants in `src/custom_tables/*.py`
+submodule. Keep the table names in project-owned files, for example a local
+schema header for C/C++ and a small Python module that mirrors the same names.
 
 Use upstream `sonic-swss-common/common/schema.h` only for upstream SONiC table
 names that already exist in SONiC.
 
-`ows_schema.h` can include upstream schema constants:
+A project-local header can include upstream schema constants:
 
 ```c
 #include "sonic-swss-common/common/schema.h"
 
-#define OWS_CFG_CUSTOM_CONFIG_TABLE_NAME "CUSTOM_CONFIG_TABLE"
-#define OWS_APP_CUSTOM_APPL_TABLE_NAME   "CUSTOM_APPL_TABLE"
+#define EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME "CUSTOM_CONFIG_TABLE"
+#define EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME   "CUSTOM_APPL_TABLE"
 ```
 
-For this minimal example, Python uses string constants directly:
+Python can mirror those constants:
 
 ```python
-CONFIG_TABLE = "CUSTOM_CONFIG_TABLE"
-APPL_TABLE = "CUSTOM_APPL_TABLE"
+EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME = "CUSTOM_CONFIG_TABLE"
+EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME = "CUSTOM_APPL_TABLE"
 ```
 
 That is enough because Redis does not validate table names against
@@ -136,35 +134,58 @@ appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
 The third argument is `False` here because this example uses the SONiC Unix
 socket, not TCP.
 
-## Direct CONFIG_DB Writes
+## Four Table API Patterns
 
-For normal config writes, use `Table`.
+These are the four table patterns discussed in this project. The important
+choice is whether the app needs direct hash access, config-change subscription,
+an ordered operation stream, or latest-state coalescing.
+
+### 1. Table
+
+`Table` is direct Redis hash access with SONiC table naming rules.
+
+Use it when:
+
+- Writing desired config into `CONFIG_DB`.
+- Reading current data from any DB.
+- Enumerating keys or manipulating a table without message queue semantics.
+
+It writes the actual DB table hash directly:
 
 ```python
 config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
 table = swsscommon.Table(config_db, "CUSTOM_CONFIG_TABLE")
 
-values = swsscommon.FieldValuePairs([
+table.set("demo", swsscommon.FieldValuePairs([
     ("enabled", "true"),
     ("interval", "10"),
-])
-
-table.set("demo", values)
+]))
 ```
 
-With the `CONFIG_DB` separator `|`, this writes:
+With the `CONFIG_DB` separator `|`, the Redis key is:
 
 ```text
-DB 4 hash key: CUSTOM_CONFIG_TABLE|demo
+DB 4 hash: CUSTOM_CONFIG_TABLE|demo
 ```
 
-Use `Table` when you want direct hash access and do not need queue semantics.
-This is appropriate for a config producer writing desired configuration into
-`CONFIG_DB`.
+`Table` does not publish a producer/consumer message queue. If another program
+needs to react to `CONFIG_DB` changes, it should subscribe with
+`SubscriberStateTable`.
 
-## Subscribing To CONFIG_DB
+### 2. SubscriberStateTable
 
-To react to config changes, use `SubscriberStateTable`.
+`SubscriberStateTable` watches table updates, most commonly in `CONFIG_DB`.
+It is the right API for an app that reacts to config changes and then computes
+derived state.
+
+Use it when:
+
+- A daemon needs startup state plus live config changes.
+- The source table is directly written by `Table`, config reload, CLI, or
+  another config owner.
+- Redis keyspace notifications are enabled.
+
+Basic loop:
 
 ```python
 config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
@@ -181,101 +202,122 @@ while True:
     key, op, field_values = subscriber.pop()
 ```
 
-Local Redis must enable keyspace notifications for this to work:
+Local Redis must enable notifications:
 
 ```text
 --notify-keyspace-events KEA
 ```
 
-The compose Redis container enables this flag.
+`SubscriberStateTable` is not an ownership boundary by itself. It observes table
+changes; the single-writer/table-owner rule still has to come from the system
+design.
 
-## Writing APPL_DB Desired State
+### 3. ProducerTable / ConsumerTable
 
-Use `ProducerStateTable` when the app publishes latest desired state to
-`APPL_DB`.
+`ProducerTable` and `ConsumerTable` implement an ordered operation stream. The
+producer sends operations; the consumer pops and applies them in order.
 
-```python
-appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
-appl_table = swsscommon.ProducerStateTable(appl_db, "CUSTOM_APPL_TABLE")
+Use them when:
 
-values = swsscommon.FieldValuePairs([
-    ("admin_status", "up"),
-    ("poll_interval", "10"),
-])
+- Every operation matters.
+- Per-table operation order matters.
+- Replacing intermediate operations with only the latest state would be wrong.
 
-appl_table.set("demo", values)
+Conceptual Redis shape:
+
+```text
+producer:
+  push key/op/field-values into <TABLE>_KEY_VALUE_OP_QUEUE
+  publish <TABLE>_CHANNEL
+
+consumer:
+  pop the list in order
+  decode key/op/field-values
+  apply each operation
 ```
 
-This does not directly materialize the final table hash. It writes pending
-state for the APPL table owner:
+This is closer to an operation log than a state snapshot. It is useful when the
+consumer must see `SET A`, then `DEL A`, then `SET A` as three separate events.
+
+Do not use it when the final state per key is enough. In that case,
+`ProducerStateTable` is usually simpler and cheaper.
+
+### 4. ProducerStateTable / ConsumerStateTable
+
+`ProducerStateTable` and `ConsumerStateTable` implement latest desired state.
+The producer writes pending state; the consumer owns materialization or applying
+that state.
+
+Use them when:
+
+- A producer publishes desired APPL_DB state.
+- Consumers do not need every intermediate update.
+- Coalescing repeated updates to the same key is acceptable.
+- Ordering across different keys is not required.
+
+Conceptual Redis shape:
+
+```text
+producer:
+  HSET _<TABLE>:<key> field value
+  SADD <TABLE>_KEY_SET key
+  publish <TABLE>_CHANNEL
+
+consumer:
+  SPOP <TABLE>_KEY_SET
+  HGETALL _<TABLE>:<key>
+  apply or materialize latest state
+  DEL _<TABLE>:<key>
+```
+
+For this project:
 
 ```text
 DB 0 hash: _CUSTOM_APPL_TABLE:demo
 DB 0 set:  CUSTOM_APPL_TABLE_KEY_SET
 ```
 
-The consumer side uses `ConsumerStateTable` to pop the changed key, read the
-pending hash, and materialize or apply the state.
+Coalescing rules:
 
-## Table API Selection
+- Same key and same field: the last pending value wins.
+- Same key and different fields: pending fields merge into one latest snapshot.
+- Different keys: processing order is not guaranteed.
 
-Use `Table` when:
+This is why `ProducerStateTable` fits `CONFIG_DB -> app -> APPL_DB` desired
+state publication: the consumer usually wants the latest desired APPL_DB state,
+not every intermediate config edit.
 
-- You need direct Redis hash access.
-- You are writing config into `CONFIG_DB`.
-- You are reading current state without queue semantics.
-
-Use `SubscriberStateTable` when:
-
-- You need to watch `CONFIG_DB` changes.
-- You want startup state plus live updates.
-- Redis keyspace notifications are available.
-
-Use `ProducerStateTable` and `ConsumerStateTable` when:
-
-- The producer publishes desired latest state.
-- Intermediate updates can be coalesced.
-- Ordering across keys is not required.
-- Same key and same field can use last-write-wins semantics.
-
-Use `ProducerTable` and `ConsumerTable` when:
-
-- Every operation must be delivered.
-- In-order processing matters.
-- You want an operation queue rather than latest-state coalescing.
-
-## ProducerTable vs ProducerStateTable
-
-`ProducerTable` is operation-log-like:
+## Selection Summary
 
 ```text
-producer:
-  push operation into a Redis list
-  publish notification
+Need direct hash read/write:
+  Table
 
-consumer:
-  pop list in order
-  process each operation
+Need to observe CONFIG_DB changes:
+  SubscriberStateTable
+
+Need every operation, in order:
+  ProducerTable + ConsumerTable
+
+Need latest desired state, coalescing is OK:
+  ProducerStateTable + ConsumerStateTable
 ```
 
-Use it when operation order is meaningful and every operation matters.
-
-`ProducerStateTable` is latest-state-like:
+The common custom SONiC pipeline is:
 
 ```text
-producer:
-  HSET _<TABLE>:<key> field value
-  SADD <TABLE>_KEY_SET key
-  publish notification
+CONFIG_DB writer:
+  Table
 
-consumer:
-  SPOP <TABLE>_KEY_SET
-  HGETALL _<TABLE>:<key>
-  apply latest state
+CONFIG_DB app reader:
+  SubscriberStateTable
+
+APPL_DB app writer:
+  ProducerStateTable
+
+APPL_DB table owner:
+  ConsumerStateTable
 ```
-
-Use it when the final desired state matters more than every intermediate
-operation.
 
 ## Atomicity And Locks
 
