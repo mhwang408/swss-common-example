@@ -9,6 +9,8 @@ from vlan_schema import ASIC_VLAN_TABLE_NAME as ASIC_TABLE
 from vlan_schema import asic_vlan_key
 from vlan_log import add_log_argument
 from vlan_log import configure_logger
+from vlan_log import emit_redis_marker
+from vlan_log import log_hash_snapshot
 from vlan_log import log_table_event
 from swsscommon_compat import load_swsscommon
 
@@ -51,7 +53,18 @@ def main():
         if state != swsscommon.Select.OBJECT:
             continue
 
+        final_key = "%s:%s" % (ASIC_TABLE, key_filter)
+        log_hash_snapshot(
+            logger,
+            "syncd",
+            "before ConsumerTable.pop final ASIC_DB hash",
+            "ASIC_DB",
+            final_key,
+            asic_db.hgetall(final_key),
+        )
+        emit_redis_marker(asic_db, "syncd", "before", "ConsumerTable.pop", "ASIC_DB", ASIC_TABLE, key_filter)
         key, op, field_values = asic_consumer.pop()
+        emit_redis_marker(asic_db, "syncd", "after", "ConsumerTable.pop", "ASIC_DB", ASIC_TABLE, key_filter)
         if key != key_filter:
             continue
 
@@ -66,6 +79,14 @@ def main():
             op=op,
             fields=field_values,
             note="ConsumerTable pop materializes ASIC_DB final hash before fake ASIC write",
+        )
+        log_hash_snapshot(
+            logger,
+            "syncd",
+            "after ConsumerTable.pop final ASIC_DB hash",
+            "ASIC_DB",
+            "%s:%s" % (ASIC_TABLE, key),
+            asic_db.hgetall("%s:%s" % (ASIC_TABLE, key)),
         )
         log_table_event(
             logger,

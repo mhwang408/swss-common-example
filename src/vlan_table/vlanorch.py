@@ -11,6 +11,8 @@ from vlan_schema import VLAN_PREFIX
 from vlan_schema import asic_vlan_key
 from vlan_log import add_log_argument
 from vlan_log import configure_logger
+from vlan_log import emit_redis_marker
+from vlan_log import log_hash_snapshot
 from vlan_log import log_table_event
 from swsscommon_compat import load_swsscommon
 
@@ -59,7 +61,18 @@ def main():
         if state != swsscommon.Select.OBJECT:
             continue
 
+        appl_final_key = "%s:%s" % (APPL_TABLE, key_filter)
+        log_hash_snapshot(
+            logger,
+            "vlanorch",
+            "before ConsumerStateTable.pop final APPL_DB hash",
+            "APPL_DB",
+            appl_final_key,
+            appl_db.hgetall(appl_final_key),
+        )
+        emit_redis_marker(appl_db, "vlanorch", "before", "ConsumerStateTable.pop", "APPL_DB", APPL_TABLE, key_filter)
         key, op, field_values = vlan_consumer.pop()
+        emit_redis_marker(appl_db, "vlanorch", "after", "ConsumerStateTable.pop", "APPL_DB", APPL_TABLE, key_filter)
         if key != key_filter:
             continue
         log_table_event(
@@ -74,6 +87,14 @@ def main():
             fields=field_values,
             note="ConsumerStateTable pop materializes APPL_DB final table content",
         )
+        log_hash_snapshot(
+            logger,
+            "vlanorch",
+            "after ConsumerStateTable.pop final APPL_DB hash",
+            "APPL_DB",
+            "%s:%s" % (APPL_TABLE, key),
+            appl_db.hgetall("%s:%s" % (APPL_TABLE, key)),
+        )
 
         print("VlanOrch: APPL_DB update %s:%s %s" % (APPL_TABLE, key, op))
         for field, value in field_values:
@@ -82,12 +103,23 @@ def main():
         appl_fields = {field: value for field, value in field_values}
         vlan_id = appl_fields.get("vlanid", args.vlan_id)
         asic_key = asic_vlan_key(vlan_id)
+        asic_final_key = "%s:%s" % (ASIC_TABLE, asic_key)
         if op == "SET":
             asic_fields = {
                 "SAI_VLAN_ATTR_VLAN_ID": vlan_id,
                 "source": "VlanOrch",
             }
+            log_hash_snapshot(
+                logger,
+                "vlanorch",
+                "before ProducerTable.set final ASIC_DB hash",
+                "ASIC_DB",
+                asic_final_key,
+                asic_db.hgetall(asic_final_key),
+            )
+            emit_redis_marker(asic_db, "vlanorch", "before", "ProducerTable.set", "ASIC_DB", ASIC_TABLE, asic_key)
             asic_producer.set(asic_key, field_value_pairs(asic_fields))
+            emit_redis_marker(asic_db, "vlanorch", "after", "ProducerTable.set", "ASIC_DB", ASIC_TABLE, asic_key)
             log_table_event(
                 logger,
                 "vlanorch",
@@ -100,9 +132,27 @@ def main():
                 fields=asic_fields.items(),
                 note="ProducerTable enqueues ASIC_DB update; ConsumerTable materializes ASIC_DB content",
             )
+            log_hash_snapshot(
+                logger,
+                "vlanorch",
+                "after ProducerTable.set final ASIC_DB hash",
+                "ASIC_DB",
+                asic_final_key,
+                asic_db.hgetall(asic_final_key),
+            )
             print("VlanOrch: queued ASIC_DB %s:%s SET" % (ASIC_TABLE, asic_key))
         elif op == "DEL":
+            log_hash_snapshot(
+                logger,
+                "vlanorch",
+                "before ProducerTable.delete final ASIC_DB hash",
+                "ASIC_DB",
+                asic_final_key,
+                asic_db.hgetall(asic_final_key),
+            )
+            emit_redis_marker(asic_db, "vlanorch", "before", "ProducerTable.delete", "ASIC_DB", ASIC_TABLE, asic_key)
             asic_producer.delete(asic_key)
+            emit_redis_marker(asic_db, "vlanorch", "after", "ProducerTable.delete", "ASIC_DB", ASIC_TABLE, asic_key)
             log_table_event(
                 logger,
                 "vlanorch",
@@ -113,6 +163,14 @@ def main():
                 asic_key,
                 op="DEL",
                 note="ProducerTable enqueues ASIC_DB delete; ConsumerTable materializes deletion",
+            )
+            log_hash_snapshot(
+                logger,
+                "vlanorch",
+                "after ProducerTable.delete final ASIC_DB hash",
+                "ASIC_DB",
+                asic_final_key,
+                asic_db.hgetall(asic_final_key),
             )
             print("VlanOrch: queued ASIC_DB %s:%s DEL" % (ASIC_TABLE, asic_key))
 

@@ -10,6 +10,8 @@ from vlan_schema import CFG_VLAN_TABLE_NAME as CONFIG_TABLE
 from vlan_schema import VLAN_PREFIX
 from vlan_log import add_log_argument
 from vlan_log import configure_logger
+from vlan_log import emit_redis_marker
+from vlan_log import log_hash_snapshot
 from vlan_log import log_table_event
 from swsscommon_compat import load_swsscommon
 
@@ -36,11 +38,23 @@ def default_vlan_id_from_key(key):
 # Database: APPL_DB
 # Table:Key->Value: VLAN_TABLE:Vlan100 -> {"vlanid": "100"}
 
-def publish_set(appl_table, logger, key, field_values):
+def publish_set(appl_db, appl_table, logger, key, field_values):
     config = {field: value for field, value in field_values}
     vlan_id = config.get("vlanid", default_vlan_id_from_key(key))
     appl_values = {"vlanid": vlan_id}
+    final_key = "%s:%s" % (APPL_TABLE, key)
+    pending_key = "_%s:%s" % (APPL_TABLE, key)
+    log_hash_snapshot(
+        logger,
+        "vlanmgrd",
+        "before ProducerStateTable.set final APPL_DB hash",
+        "APPL_DB",
+        final_key,
+        appl_db.hgetall(final_key),
+    )
+    emit_redis_marker(appl_db, "vlanmgrd", "before", "ProducerStateTable.set", "APPL_DB", APPL_TABLE, key)
     appl_table.set(key, field_value_pairs(appl_values))
+    emit_redis_marker(appl_db, "vlanmgrd", "after", "ProducerStateTable.set", "APPL_DB", APPL_TABLE, key)
     log_table_event(
         logger,
         "vlanmgrd",
@@ -53,6 +67,22 @@ def publish_set(appl_table, logger, key, field_values):
         fields=appl_values.items(),
         note="ProducerStateTable writes pending state; ConsumerStateTable materializes APPL_DB content",
     )
+    log_hash_snapshot(
+        logger,
+        "vlanmgrd",
+        "after ProducerStateTable.set final APPL_DB hash",
+        "APPL_DB",
+        final_key,
+        appl_db.hgetall(final_key),
+    )
+    log_hash_snapshot(
+        logger,
+        "vlanmgrd",
+        "after ProducerStateTable.set pending APPL_DB hash",
+        "APPL_DB",
+        pending_key,
+        appl_db.hgetall(pending_key),
+    )
 
     print("vlanmgrd: CONFIG_DB %s|%s SET -> APPL_DB %s:%s SET" % (
         CONFIG_TABLE,
@@ -63,8 +93,19 @@ def publish_set(appl_table, logger, key, field_values):
     print('  fields: {"vlanid": "%s"}' % vlan_id)
 
 
-def publish_delete(appl_table, logger, key):
+def publish_delete(appl_db, appl_table, logger, key):
+    final_key = "%s:%s" % (APPL_TABLE, key)
+    log_hash_snapshot(
+        logger,
+        "vlanmgrd",
+        "before ProducerStateTable.delete final APPL_DB hash",
+        "APPL_DB",
+        final_key,
+        appl_db.hgetall(final_key),
+    )
+    emit_redis_marker(appl_db, "vlanmgrd", "before", "ProducerStateTable.delete", "APPL_DB", APPL_TABLE, key)
     appl_table.delete(key)
+    emit_redis_marker(appl_db, "vlanmgrd", "after", "ProducerStateTable.delete", "APPL_DB", APPL_TABLE, key)
     log_table_event(
         logger,
         "vlanmgrd",
@@ -75,6 +116,14 @@ def publish_delete(appl_table, logger, key):
         key,
         op="DEL",
         note="ProducerStateTable queues delete pending state; ConsumerStateTable materializes deletion",
+    )
+    log_hash_snapshot(
+        logger,
+        "vlanmgrd",
+        "after ProducerStateTable.delete final APPL_DB hash",
+        "APPL_DB",
+        final_key,
+        appl_db.hgetall(final_key),
     )
     print("vlanmgrd: CONFIG_DB %s|%s DEL -> APPL_DB %s:%s DEL" % (
         CONFIG_TABLE,
@@ -108,6 +157,7 @@ def main():
     key_filter = "%s%s" % (VLAN_PREFIX, args.vlan_id)
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
     appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
+    config_table = swsscommon.Table(config_db, CONFIG_TABLE)
     config_subscriber = swsscommon.SubscriberStateTable(config_db, CONFIG_TABLE)
     appl_table = swsscommon.ProducerStateTable(appl_db, APPL_TABLE)
     selector = swsscommon.Select()
@@ -115,6 +165,26 @@ def main():
 
     print("vlanmgrd: waiting for CONFIG_DB %s|%s updates" % (CONFIG_TABLE, key_filter))
     print("vlanmgrd: db log %s" % log_path)
+
+    if not args.watch:
+        emit_redis_marker(config_db, "vlanmgrd", "before", "Table.get", "CONFIG_DB", CONFIG_TABLE, key_filter)
+        status, field_values = config_table.get(key_filter)
+        emit_redis_marker(config_db, "vlanmgrd", "after", "Table.get", "CONFIG_DB", CONFIG_TABLE, key_filter)
+        if status:
+            log_table_event(
+                logger,
+                "vlanmgrd",
+                "Table.get",
+                "READ",
+                "CONFIG_DB",
+                CONFIG_TABLE,
+                key_filter,
+                op="SET",
+                fields=field_values,
+                note="One-shot replay reads existing CONFIG_DB content",
+            )
+            publish_set(appl_db, appl_table, logger, key_filter, field_values)
+            return
 
     while True:
         state, selectable = selector.select()
@@ -138,9 +208,9 @@ def main():
         )
 
         if op == "SET":
-            publish_set(appl_table, logger, key, field_values)
+            publish_set(appl_db, appl_table, logger, key, field_values)
         elif op == "DEL":
-            publish_delete(appl_table, logger, key)
+            publish_delete(appl_db, appl_table, logger, key)
         else:
             print("vlanmgrd: ignoring CONFIG_DB %s|%s op %s" % (CONFIG_TABLE, key, op))
 
