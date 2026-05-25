@@ -221,8 +221,9 @@ Phase 4 is modeled by `syncd.py`. It consumes ASIC_DB
 `ASIC_STATE:SAI_OBJECT_TYPE_VLAN` updates with `ConsumerTable.pop()`, prints
 the update, and logs a fake ASIC write.
 
-All four scripts log DB table reads and writes to
-`/var/run/redis/vlan_table_db.log` by default. Override it with `--log-file`.
+The scripts emit Redis `__VERIFY_MARKER:*` keys around important `swsscommon`
+API calls. Use Redis `MONITOR` or `scripts/verify_vlan_flow.sh` to see those
+markers interleaved with the real DB operations.
 
 For a one-command verification run that also captures timestamped Redis
 `MONITOR` output:
@@ -239,10 +240,10 @@ prints the DB state after each step:
 config command -> CONFIG_DB check -> vlanmgrd -> APPL_DB check -> vlanorch -> ASIC_DB check -> syncd
 ```
 
-It also writes a full Redis command trace to `/tmp/swss_vlan_monitor_*.log`.
-The trace includes `__VERIFY_MARKER:*` `HSET` events immediately before and
-after each important `swsscommon` API call, making it easy to see which Redis
-operations happened inside `Table.set`, `ProducerStateTable.set`,
+It also writes the raw Redis command trace to `/tmp/swss_vlan_monitor_*.log`
+and a filtered version to `/tmp/swss_vlan_pretty_*.log`. The pretty log groups
+operations by `__VERIFY_MARKER:*` before/after markers, making it easy to see
+which Redis commands happened inside `Table.set`, `ProducerStateTable.set`,
 `ConsumerStateTable.pop`, `ProducerTable.set`, and `ConsumerTable.pop`.
 
 Start the local Redis and runner as shown above, then use four terminals:
@@ -313,7 +314,6 @@ docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
-cat /var/run/redis/vlan_table_db.log
 ```
 
 The expected materialization result is:
