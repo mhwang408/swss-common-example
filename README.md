@@ -26,6 +26,22 @@ dependencies; `src/sonic-swss-common` and `database_config.json` are
 bind-mounted (not copied into the image), so edits to either take effect on the
 next container run without rebuilding.
 
+The `runner` service runs as `${UID}:${GID}` so Python bytecode caches created
+inside the bind-mounted repo are owned by your host user, not by root or the
+container fallback user. This repo includes an `.envrc` for `direnv`:
+
+```bash
+cd /home/ubuntu/swss-common-example
+direnv allow .
+```
+
+After that, entering the repo automatically exports `UID` and `GID` for
+`docker compose`. Without `direnv`, prefix compose commands explicitly:
+
+```bash
+UID=$(id -u) GID=$(id -g) docker compose run --rm runner
+```
+
 Build the runner and start a local container named `database`:
 
 ```bash
@@ -176,6 +192,9 @@ config vlan add/del 100
   -> vlanmgrd SubscriberStateTable
   -> APPL_DB VLAN_TABLE:Vlan100 through ProducerStateTable
   -> VlanOrch ConsumerStateTable
+  -> ASIC_DB ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:... through ProducerTable
+  -> syncd ConsumerTable
+  -> fake ASIC write log
 ```
 
 Phase 1 emulates the config command. `config vlan add 100` writes this
@@ -195,11 +214,31 @@ table with `SubscriberStateTable`. For `SET`, it calls
 `ProducerStateTable.delete("Vlan100")`.
 
 Phase 3 is modeled by `vlanorch.py`. It consumes APPL_DB `VLAN_TABLE` updates
-with `ConsumerStateTable.pop()` and prints each update.
+with `ConsumerStateTable.pop()`, then queues ASIC_DB updates with
+`ProducerTable`.
 
-Start the local Redis and runner as shown above, then use three terminals:
+Phase 4 is modeled by `syncd.py`. It consumes ASIC_DB
+`ASIC_STATE:SAI_OBJECT_TYPE_VLAN` updates with `ConsumerTable.pop()`, prints
+the update, and logs a fake ASIC write.
 
-Terminal 1, tiny VlanOrch:
+All four scripts log DB table reads and writes to
+`/var/run/redis/vlan_table_db.log` by default. Override it with `--log-file`.
+
+Start the local Redis and runner as shown above, then use four terminals:
+
+Terminal 1, tiny syncd:
+
+```bash
+cd /home/ubuntu/swss-common-example
+docker compose run --rm \
+  --entrypoint python3 \
+  runner \
+  src/vlan_table/syncd.py \
+  --vlan-id 100 \
+  --watch
+```
+
+Terminal 2, tiny VlanOrch:
 
 ```bash
 cd /home/ubuntu/swss-common-example
@@ -211,7 +250,7 @@ docker compose run --rm \
   --watch
 ```
 
-Terminal 2, tiny vlanmgrd:
+Terminal 3, tiny vlanmgrd:
 
 ```bash
 cd /home/ubuntu/swss-common-example
@@ -223,7 +262,7 @@ docker compose run --rm \
   --watch
 ```
 
-Terminal 3, emulate `config vlan add 100`:
+Terminal 4, emulate `config vlan add 100`:
 
 ```bash
 cd /home/ubuntu/swss-common-example
@@ -251,4 +290,15 @@ docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'VLAN|V
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_VLAN_TABLE:Vlan100'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_TABLE_KEY_SET'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+cat /var/run/redis/vlan_table_db.log
+```
+
+The expected materialization result is:
+
+```text
+CONFIG_DB VLAN|Vlan100: materialized by the Table writer in config_vlan_command.py.
+APPL_DB VLAN_TABLE:Vlan100: materialized by the ConsumerStateTable reader in vlanorch.py.
+ASIC_DB ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:...: materialized by the ConsumerTable reader in syncd.py.
 ```

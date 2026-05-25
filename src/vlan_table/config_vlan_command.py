@@ -11,6 +11,9 @@ import argparse
 
 from vlan_schema import CFG_VLAN_TABLE_NAME as CONFIG_TABLE
 from vlan_schema import VLAN_PREFIX
+from vlan_log import add_log_argument
+from vlan_log import configure_logger
+from vlan_log import log_table_event
 from swsscommon_compat import load_swsscommon
 
 
@@ -35,7 +38,9 @@ def main():
         "--db-config",
         help="path to database_config.json; useful when running Redis in a local host container",
     )
+    add_log_argument(parser)
     args = parser.parse_args()
+    logger, log_path = configure_logger(args.log_file)
 
     if args.db_config:
         swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
@@ -50,13 +55,38 @@ def main():
     if args.operation == "add":
         values = {"vlanid": args.vlan_id}
         config_table.set(key, field_value_pairs(values))
+        log_table_event(
+            logger,
+            "config_vlan_command",
+            "Table.set",
+            "WRITE",
+            "CONFIG_DB",
+            CONFIG_TABLE,
+            key,
+            op="SET",
+            fields=values.items(),
+            note="Table writer materializes CONFIG_DB hash content immediately",
+        )
         print("config vlan add %s" % args.vlan_id)
         print("  wrote CONFIG_DB %s|%s" % (CONFIG_TABLE, key))
         print('  fields: {"vlanid": "%s"}' % args.vlan_id)
+        print("  db log: %s" % log_path)
     else:
         config_table.delete(key)
+        log_table_event(
+            logger,
+            "config_vlan_command",
+            "Table.delete",
+            "WRITE",
+            "CONFIG_DB",
+            CONFIG_TABLE,
+            key,
+            op="DEL",
+            note="Table writer deletes CONFIG_DB hash content immediately",
+        )
         print("config vlan del %s" % args.vlan_id)
         print("  deleted CONFIG_DB %s|%s" % (CONFIG_TABLE, key))
+        print("  db log: %s" % log_path)
 
 
 if __name__ == "__main__":

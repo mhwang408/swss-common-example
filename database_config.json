@@ -12,6 +12,11 @@
             "separator": ":",
             "instance": "redis"
         },
+        "ASIC_DB": {
+            "id": 1,
+            "separator": ":",
+            "instance": "redis"
+        },
         "CONFIG_DB": {
             "id": 4,
             "separator": "|",
