@@ -22,9 +22,9 @@ APIs, and reasoning about Redis/Lua atomicity are in
 You do not need to run the full SONiC stack for this minimal example. A normal
 Redis container is enough because this example only uses Redis DB numbers and
 SONiC table separators. The compose file provides a `runner` image with build
-dependencies; `src/sonic-swss-common` and `database_config.json` are
-bind-mounted (not copied into the image), so edits to either take effect on the
-next container run without rebuilding.
+dependencies. The repo is bind-mounted into the runner, so edits to
+`src/sonic-swss-common`, `entrypoint.sh`, and `database_config.json` take
+effect on the next container run without rebuilding the image.
 
 The `runner` service runs as `${UID}:${GID}` so Python bytecode caches created
 inside the bind-mounted repo are owned by your host user, not by root or the
@@ -53,9 +53,10 @@ docker compose up -d
 
 The compose file bind-mounts host `/var/run/redis` into both `database` and
 `runner`. Redis creates `/var/run/redis/redis.sock`, so the host and other
-containers can use the same Unix socket. `database_config.json` is bind-mounted
-directly into `/var/run/redis/sonic-db/database_config.json`, which is the
-default path used by `swsscommon`. TCP is disabled in this local setup.
+containers can use the same Unix socket. To avoid nested bind mounts under
+`/var/run/redis`, `entrypoint.sh` copies the repo `database_config.json` into
+`/var/run/redis/sonic-db/database_config.json`, which is the default path used
+by `swsscommon`. TCP is disabled in this local setup.
 
 The image only contains build dependencies. Compilation of `sonic-swss-common`
 happens at container start via `entrypoint.sh`, which checks for
@@ -68,8 +69,7 @@ trigger a rebuild. To force a rebuild after changing `src/sonic-swss-common`:
 docker volume rm swss-common-example_swss-common-install
 ```
 
-To rebuild the runner image itself (e.g. after changing `entrypoint.sh` or
-`Dockerfile`):
+To rebuild the runner image itself (e.g. after changing `Dockerfile`):
 
 ```bash
 docker compose build --no-cache runner

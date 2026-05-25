@@ -3,22 +3,20 @@ services:
     image: redis:7-alpine
     container_name: database
     command:
-      - "redis-server"
-      - "--port"
-      - "0"
-      - "--databases"
-      - "32"
-      - "--appendonly"
-      - "no"
-      - "--notify-keyspace-events"
-      - "KEA"
-      - "--unixsocket"
-      - "/var/run/redis/redis.sock"
-      - "--unixsocketperm"
-      - "777"
+      - "sh"
+      - "-c"
+      - |
+        mkdir -p /var/run/redis/sonic-db
+        chmod 777 /var/run/redis/sonic-db
+        exec redis-server \
+          --port 0 \
+          --databases 32 \
+          --appendonly no \
+          --notify-keyspace-events KEA \
+          --unixsocket /var/run/redis/redis.sock \
+          --unixsocketperm 777
     volumes:
       - /var/run/redis:/var/run/redis
-      - ./database_config.json:/var/run/redis/sonic-db/database_config.json:ro
 
   runner:
     build:
@@ -28,6 +26,9 @@ services:
     depends_on:
       - database
     user: "${UID}:${GID}"
+    entrypoint:
+      - /bin/bash
+      - /home/ubuntu/swss-common-example/entrypoint.sh
     working_dir: /home/ubuntu/swss-common-example
     volumes:
       - .:/home/ubuntu/swss-common-example

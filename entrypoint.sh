@@ -20,4 +20,8 @@ if [ ! -f /usr/local/lib/libswsscommon.so ]; then
 fi
 
 cd /home/ubuntu/swss-common-example
+mkdir -p /var/run/redis/sonic-db
+rm -f /var/run/redis/sonic-db/database_config.json
+cp database_config.json /var/run/redis/sonic-db/database_config.json
+chmod 644 /var/run/redis/sonic-db/database_config.json
 exec "$@"
