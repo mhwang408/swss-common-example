@@ -1,0 +1,21 @@
+{
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/dockers",
+    "**/target",
+    "**/sonic-linux-kernel",
+    "**/fsroot*",
+    "**/*.deb",
+    "**/.pytest_cache",
+    "**/build"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "src"
+    }
+  ]
+}

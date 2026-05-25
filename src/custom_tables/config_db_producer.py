@@ -10,8 +10,7 @@ import time
 
 from swsscommon import swsscommon
 
-
-CONFIG_TABLE = "CUSTOM_CONFIG_TABLE"
+from example_schema import EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME as CONFIG_TABLE
 
 
 def field_value_pairs(fields):
