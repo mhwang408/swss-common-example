@@ -224,6 +224,17 @@ Phase 4 is modeled by `syncd.py`. It consumes ASIC_DB
 `ASIC_STATE:SAI_OBJECT_TYPE_VLAN` updates with `ConsumerTable.pop()`, prints
 the update, and logs a fake ASIC write.
 
+Component/API selection:
+
+| Component | API | Handles | Why |
+| --- | --- | --- | --- |
+| `config_vlan_command.py` | `Table.set` | Writes `CONFIG_DB VLAN|Vlan100` | CONFIG_DB is durable config state, not a queue. |
+| `vlanmgrd.py` | `Table.get` / `SubscriberStateTable.pop` | Reads CONFIG_DB VLAN config | Replay existing config at startup, or watch later config changes. |
+| `vlanmgrd.py` | `ProducerStateTable.set` | Writes APPL_DB pending state | APPL_DB desired state can coalesce repeated updates to the same key. |
+| `vlanorch.py` | `ConsumerStateTable.pop` | Consumes APPL_DB pending state | The APPL table owner materializes `VLAN_TABLE:Vlan100`. |
+| `vlanorch.py` | `ProducerTable.set` | Enqueues ASIC_DB operation | ASIC operations are ordered events; every create/remove/set matters. |
+| `syncd.py` | `ConsumerTable.pop` | Consumes ASIC_DB queue | syncd materializes ASIC_DB final state and applies it to ASIC. |
+
 The scripts emit Redis `__VERIFY_MARKER:*` keys around important `swsscommon`
 API calls. Use Redis `MONITOR` or `scripts/verify_vlan_flow.sh` to see those
 markers interleaved with the real DB operations.
