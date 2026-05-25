@@ -45,6 +45,9 @@ def fields_to_dict(field_values):
 
 
 def log_table_event(logger, actor, api, action, db_name, table, key, op="", fields=None, note=""):
+    # Disabled: Redis MONITOR plus __VERIFY_MARKER events are the source of truth
+    # for ordered verification. File-level event logs are intentionally quiet.
+    return
     payload = {
         "actor": actor,
         "api": api,
@@ -63,6 +66,9 @@ def log_table_event(logger, actor, api, action, db_name, table, key, op="", fiel
 
 
 def log_hash_snapshot(logger, actor, label, db_name, redis_key, fields):
+    # Disabled: script-level Redis checks provide snapshots outside the marked
+    # API regions, keeping MONITOR output clean inside before/after markers.
+    return
     log_table_event(
         logger,
         actor,

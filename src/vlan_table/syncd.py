@@ -10,7 +10,6 @@ from vlan_schema import asic_vlan_key
 from vlan_log import add_log_argument
 from vlan_log import configure_logger
 from vlan_log import emit_redis_marker
-from vlan_log import log_hash_snapshot
 from vlan_log import log_table_event
 from swsscommon_compat import load_swsscommon
 
@@ -34,7 +33,7 @@ def main():
     )
     add_log_argument(parser)
     args = parser.parse_args()
-    logger, log_path = configure_logger(args.log_file)
+    logger, _ = configure_logger(args.log_file)
 
     if args.db_config:
         swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
@@ -46,22 +45,12 @@ def main():
     selector.addSelectable(asic_consumer)
 
     print("syncd: waiting for ASIC_DB %s:%s updates" % (ASIC_TABLE, key_filter))
-    print("syncd: db log %s" % log_path)
 
     while True:
         state, selectable = selector.select()
         if state != swsscommon.Select.OBJECT:
             continue
 
-        final_key = "%s:%s" % (ASIC_TABLE, key_filter)
-        log_hash_snapshot(
-            logger,
-            "syncd",
-            "before ConsumerTable.pop final ASIC_DB hash",
-            "ASIC_DB",
-            final_key,
-            asic_db.hgetall(final_key),
-        )
         emit_redis_marker(asic_db, "syncd", "before", "ConsumerTable.pop", "ASIC_DB", ASIC_TABLE, key_filter)
         key, op, field_values = asic_consumer.pop()
         emit_redis_marker(asic_db, "syncd", "after", "ConsumerTable.pop", "ASIC_DB", ASIC_TABLE, key_filter)
@@ -79,14 +68,6 @@ def main():
             op=op,
             fields=field_values,
             note="ConsumerTable pop materializes ASIC_DB final hash before fake ASIC write",
-        )
-        log_hash_snapshot(
-            logger,
-            "syncd",
-            "after ConsumerTable.pop final ASIC_DB hash",
-            "ASIC_DB",
-            "%s:%s" % (ASIC_TABLE, key),
-            asic_db.hgetall("%s:%s" % (ASIC_TABLE, key)),
         )
         log_table_event(
             logger,

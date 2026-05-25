@@ -41,7 +41,7 @@ def main():
     )
     add_log_argument(parser)
     args = parser.parse_args()
-    logger, log_path = configure_logger(args.log_file)
+    logger, _ = configure_logger(args.log_file)
 
     if args.db_config:
         swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
@@ -73,7 +73,6 @@ def main():
         print("config vlan add %s" % args.vlan_id)
         print("  wrote CONFIG_DB %s|%s" % (CONFIG_TABLE, key))
         print('  fields: {"vlanid": "%s"}' % args.vlan_id)
-        print("  db log: %s" % log_path)
     else:
         emit_redis_marker(config_db, "config_vlan_command", "before", "Table.delete", "CONFIG_DB", CONFIG_TABLE, key)
         config_table.delete(key)
@@ -91,7 +90,6 @@ def main():
         )
         print("config vlan del %s" % args.vlan_id)
         print("  deleted CONFIG_DB %s|%s" % (CONFIG_TABLE, key))
-        print("  db log: %s" % log_path)
 
 
 if __name__ == "__main__":
