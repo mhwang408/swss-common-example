@@ -24,15 +24,14 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile
-    image: ows-example-runner
+    image: swss-common-example-runner
     depends_on:
       - database
-    working_dir: /home/ubuntu/ows-example
+    working_dir: /home/ubuntu/swss-common-example
     volumes:
-      - .:/home/ubuntu/ows-example
+      - .:/home/ubuntu/swss-common-example
       - swss-common-install:/usr/local
       - /var/run/redis:/var/run/redis
-      - ./database_config.json:/var/run/redis/sonic-db/database_config.json:ro
 
 volumes:
   swss-common-install:
