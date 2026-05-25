@@ -487,6 +487,55 @@ ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100:
   syncd.py ConsumerTable.pop 裡的 Lua HSET 寫入
 ```
 
+`syncd.py` 的核心邏輯是：
+
+```python
+asic_db = swsscommon.DBConnector("ASIC_DB", 0, False)
+asic_consumer = swsscommon.ConsumerTable(
+    asic_db,
+    "ASIC_STATE:SAI_OBJECT_TYPE_VLAN",
+)
+
+selector = swsscommon.Select()
+selector.addSelectable(asic_consumer)
+
+state, _ = selector.select()
+if state == swsscommon.Select.OBJECT:
+    key, op, field_values = asic_consumer.pop()
+```
+
+當 `vlanorch.py` 已經用 `ProducerTable.set()` 寫入 queue 後，Redis 裡會先有：
+
+```text
+DB 1 list: ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+  SSET
+  ["SAI_VLAN_ATTR_VLAN_ID","100","source","VlanOrch"]
+  oid:0x26000000000100
+```
+
+`syncd.py` 呼叫 `ConsumerTable.pop()` 時，`swsscommon` 內部 Lua 會：
+
+```text
+LRANGE ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
+HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 source VlanOrch
+```
+
+然後 Python 端拿到：
+
+```text
+key = "oid:0x26000000000100"
+op = "SET"
+field_values = [
+  ("SAI_VLAN_ATTR_VLAN_ID", "100"),
+  ("source", "VlanOrch"),
+]
+```
+
+本專案的 tiny syncd 只會印出這些欄位並輸出 `pretend write ASIC`，用來代表真正 SONiC
+`syncd` 接下來會把 SAI object operation 套到 ASIC。
+
 啟動 tiny syncd：
 
 ```bash

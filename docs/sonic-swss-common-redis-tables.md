@@ -259,6 +259,38 @@ LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
 HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
 ```
 
+The tiny `syncd.py` code path is:
+
+```python
+asic_db = swsscommon.DBConnector("ASIC_DB", 0, False)
+asic_consumer = swsscommon.ConsumerTable(
+    asic_db,
+    "ASIC_STATE:SAI_OBJECT_TYPE_VLAN",
+)
+
+selector = swsscommon.Select()
+selector.addSelectable(asic_consumer)
+
+state, _ = selector.select()
+if state == swsscommon.Select.OBJECT:
+    key, op, field_values = asic_consumer.pop()
+```
+
+For the VLAN create case, `pop()` returns:
+
+```text
+key = "oid:0x26000000000100"
+op = "SET"
+field_values = [
+  ("SAI_VLAN_ATTR_VLAN_ID", "100"),
+  ("source", "VlanOrch"),
+]
+```
+
+`ConsumerTable.pop()` is the point where the queued operation becomes a final
+ASIC_DB hash. In the example, `syncd.py` then prints the tuple and logs a fake
+ASIC write; it does not touch a real ASIC.
+
 This is closer to an operation log than a state snapshot. It is useful when the
 consumer must see `SET A`, then `DEL A`, then `SET A` as three separate events.
 

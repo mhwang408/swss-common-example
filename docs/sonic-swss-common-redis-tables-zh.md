@@ -249,6 +249,37 @@ LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
 HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
 ```
 
+tiny `syncd.py` 的程式流程是：
+
+```python
+asic_db = swsscommon.DBConnector("ASIC_DB", 0, False)
+asic_consumer = swsscommon.ConsumerTable(
+    asic_db,
+    "ASIC_STATE:SAI_OBJECT_TYPE_VLAN",
+)
+
+selector = swsscommon.Select()
+selector.addSelectable(asic_consumer)
+
+state, _ = selector.select()
+if state == swsscommon.Select.OBJECT:
+    key, op, field_values = asic_consumer.pop()
+```
+
+以 VLAN create 為例，`pop()` 回傳：
+
+```text
+key = "oid:0x26000000000100"
+op = "SET"
+field_values = [
+  ("SAI_VLAN_ATTR_VLAN_ID", "100"),
+  ("source", "VlanOrch"),
+]
+```
+
+`ConsumerTable.pop()` 就是 queued operation 變成 final ASIC_DB hash 的時間點。
+本專案的 `syncd.py` 接著只會印出 tuple，並記錄「假裝寫 ASIC」；它不會真的操作 ASIC。
+
 它比較像 operation log，不是 state snapshot。若 consumer 必須看到 `SET A`、`DEL A`、`SET A` 三個獨立事件，就用這組。
 
 如果 consumer 只需要某個 key 的最終 desired state，就不要用這組，通常 `ProducerStateTable` 更簡單也更適合。
