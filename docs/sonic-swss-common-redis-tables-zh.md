@@ -99,6 +99,11 @@ YANG model 和 `sonic-swss-common/gen_cfg_schema.py` 適合用在更完整的 SO
             "separator": ":",
             "instance": "redis"
         },
+        "ASIC_DB": {
+            "id": 1,
+            "separator": ":",
+            "instance": "redis"
+        },
         "CONFIG_DB": {
             "id": 4,
             "separator": "|",
@@ -115,7 +120,11 @@ YANG model 和 `sonic-swss-common/gen_cfg_schema.py` 適合用在更完整的 SO
 /var/run/redis/sonic-db/database_config.json
 ```
 
-本專案的 `database` container 會把專案根目錄的 `database_config.json` copy 到這個路徑，並提供 `/var/run/redis/redis.sock`。
+本專案把 host `/var/run/redis` 同時掛到 `database` 和 `runner` container。
+`runner` 的 `entrypoint.sh` 會在啟動時把專案根目錄的
+`database_config.json` copy 到
+`/var/run/redis/sonic-db/database_config.json`，避免在 `/var/run/redis`
+底下做 nested bind mount。
 
 Python 也可以明確載入 config：
 
@@ -224,6 +233,22 @@ consumer:
   apply each operation
 ```
 
+本專案的 VLAN ASIC_DB 範例中，`vlanorch.py` 用 `ProducerTable` 把 ASIC_DB
+operation 放進 queue：
+
+```text
+LPUSH ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE key value op
+```
+
+這一步不會 materialize 最終 ASIC_DB hash。最終 hash 是 `syncd.py` 呼叫
+`ConsumerTable.pop()` 時，由 Redis Lua 寫入：
+
+```text
+LRANGE ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
+```
+
 它比較像 operation log，不是 state snapshot。若 consumer 必須看到 `SET A`、`DEL A`、`SET A` 三個獨立事件，就用這組。
 
 如果 consumer 只需要某個 key 的最終 desired state，就不要用這組，通常 `ProducerStateTable` 更簡單也更適合。
@@ -252,6 +277,23 @@ consumer:
   HGETALL _<TABLE>:<key>
   apply or materialize latest state
   DEL _<TABLE>:<key>
+```
+
+VLAN 範例用 Redis `MONITOR` 驗證了實際時間點：`vlanmgrd.py`
+`ProducerStateTable.set()` 只寫 APPL_DB pending state：
+
+```text
+SADD VLAN_TABLE_KEY_SET Vlan100
+HSET _VLAN_TABLE:Vlan100 vlanid 100
+```
+
+最終 APPL_DB hash 是 `vlanorch.py` 的 `ConsumerStateTable.pop()` materialize：
+
+```text
+SPOP VLAN_TABLE_KEY_SET
+HGETALL _VLAN_TABLE:Vlan100
+HSET VLAN_TABLE:Vlan100 vlanid 100
+DEL _VLAN_TABLE:Vlan100
 ```
 
 本專案例子：

@@ -100,6 +100,11 @@ Example:
             "separator": ":",
             "instance": "redis"
         },
+        "ASIC_DB": {
+            "id": 1,
+            "separator": ":",
+            "instance": "redis"
+        },
         "CONFIG_DB": {
             "id": 4,
             "separator": "|",
@@ -116,8 +121,10 @@ In a real SONiC system, this normally exists at:
 /var/run/redis/sonic-db/database_config.json
 ```
 
-In this project, the `database` container copies the project
-`database_config.json` to that path and exposes `/var/run/redis/redis.sock`.
+In this project, `/var/run/redis` is shared between the `database` and
+`runner` containers. The runner entrypoint copies the project
+`database_config.json` to `/var/run/redis/sonic-db/database_config.json` before
+running the example, avoiding a nested bind mount under `/var/run/redis`.
 The Python examples can also explicitly load the project config:
 
 ```python
@@ -236,6 +243,22 @@ consumer:
   apply each operation
 ```
 
+For the VLAN ASIC_DB example in this repo, `vlanorch.py` uses `ProducerTable`
+to enqueue an ASIC_DB operation:
+
+```text
+LPUSH ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE key value op
+```
+
+That does not materialize the final ASIC_DB hash. The final hash appears only
+when `syncd.py` calls `ConsumerTable.pop()`, whose Redis Lua performs:
+
+```text
+LRANGE ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
+```
+
 This is closer to an operation log than a state snapshot. It is useful when the
 consumer must see `SET A`, then `DEL A`, then `SET A` as three separate events.
 
@@ -268,6 +291,24 @@ consumer:
   HGETALL _<TABLE>:<key>
   apply or materialize latest state
   DEL _<TABLE>:<key>
+```
+
+The VLAN example verifies this with Redis `MONITOR`: `vlanmgrd.py`
+`ProducerStateTable.set()` writes only pending APPL_DB state:
+
+```text
+SADD VLAN_TABLE_KEY_SET Vlan100
+HSET _VLAN_TABLE:Vlan100 vlanid 100
+```
+
+The final APPL_DB hash is materialized later by `vlanorch.py`
+`ConsumerStateTable.pop()`:
+
+```text
+SPOP VLAN_TABLE_KEY_SET
+HGETALL _VLAN_TABLE:Vlan100
+HSET VLAN_TABLE:Vlan100 vlanid 100
+DEL _VLAN_TABLE:Vlan100
 ```
 
 For this project:

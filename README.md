@@ -16,6 +16,9 @@ CONFIG_DB keys use `|` and APPL_DB keys use `:`.
 Detailed notes on defining custom table names, choosing `swsscommon` table
 APIs, and reasoning about Redis/Lua atomicity are in
 [docs/sonic-swss-common-redis-tables.md](docs/sonic-swss-common-redis-tables.md).
+Chinese notes are available in
+[docs/sonic-swss-common-redis-tables-zh.md](docs/sonic-swss-common-redis-tables-zh.md)
+and [docs/config-sync-flow-in-SONiC-zh.md](docs/config-sync-flow-in-SONiC-zh.md).
 
 ## Run
 
@@ -245,6 +248,40 @@ and a filtered version to `/tmp/swss_vlan_pretty_*.log`. The pretty log groups
 operations by `__VERIFY_MARKER:*` before/after markers, making it easy to see
 which Redis commands happened inside `Table.set`, `ProducerStateTable.set`,
 `ConsumerStateTable.pop`, `ProducerTable.set`, and `ConsumerTable.pop`.
+
+The verified write/materialization points are:
+
+```text
+CONFIG_DB final VLAN|Vlan100:
+  config_vlan_command.py Table.set
+
+APPL_DB pending _VLAN_TABLE:Vlan100 and VLAN_TABLE_KEY_SET:
+  vlanmgrd.py ProducerStateTable.set
+
+APPL_DB final VLAN_TABLE:Vlan100:
+  vlanorch.py ConsumerStateTable.pop
+
+ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE:
+  vlanorch.py ProducerTable.set
+
+ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100:
+  syncd.py ConsumerTable.pop
+```
+
+In the pretty monitor log, the important sections look like:
+
+```text
+## vlanorch ConsumerStateTable.pop APPL_DB:VLAN_TABLE
+  SPOP VLAN_TABLE_KEY_SET
+  HGETALL _VLAN_TABLE:Vlan100
+  HSET VLAN_TABLE:Vlan100 vlanid 100
+  DEL _VLAN_TABLE:Vlan100
+
+## syncd ConsumerTable.pop ASIC_DB:ASIC_STATE:SAI_OBJECT_TYPE_VLAN
+  LRANGE ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+  LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+  HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
+```
 
 Start the local Redis and runner as shown above, then use four terminals:
 
