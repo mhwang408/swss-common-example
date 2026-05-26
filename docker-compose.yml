@@ -8,15 +8,10 @@ services:
       - |
         mkdir -p /var/run/redis/sonic-db
         chmod 777 /var/run/redis/sonic-db
-        exec redis-server \
-          --port 0 \
-          --databases 32 \
-          --appendonly no \
-          --notify-keyspace-events KEA \
-          --unixsocket /var/run/redis/redis.sock \
-          --unixsocketperm 777
+        exec redis-server /etc/redis/redis.conf
     volumes:
       - /var/run/redis:/var/run/redis
+      - ./redis.conf:/etc/redis/redis.conf:ro
 
   runner:
     build:
