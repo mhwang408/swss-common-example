@@ -6,6 +6,8 @@ cd "$repo_root"
 
 export UID
 export GID="${GID:-$(id -g)}"
+run_pid=""
+container_name="swss-common-example-vlan-${component:-run}-$$"
 
 usage() {
     cat <<'EOF'
@@ -32,6 +34,7 @@ if [[ -z "$component" || "$component" == "-h" || "$component" == "--help" ]]; th
     exit 0
 fi
 shift
+container_name="swss-common-example-vlan-${component}-$$"
 
 case "$component" in
     config-add)
@@ -67,5 +70,16 @@ case "$component" in
         ;;
 esac
 
+cleanup() {
+    if [[ -n "$run_pid" ]] && kill -0 "$run_pid" 2>/dev/null; then
+        kill "$run_pid" 2>/dev/null || true
+    fi
+    docker rm -f "$container_name" >/dev/null 2>&1 || true
+}
+
+trap cleanup INT TERM EXIT
+
 docker compose up -d database >/dev/null
-exec docker compose run --rm runner "${target[@]}" "$@"
+docker compose run --rm --name "$container_name" -T runner "${target[@]}" "$@" &
+run_pid=$!
+wait "$run_pid"
