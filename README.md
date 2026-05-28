@@ -81,11 +81,15 @@ docker compose build --no-cache runner
 Then run the bridge in the runner container, using the shared Redis socket and
 the compose DB config.
 
+Helper scripts under `scripts/` wrap the `docker compose run --rm runner ...`
+commands and start the local `database` service if needed. They pass any extra
+arguments through to the underlying Python component.
+
 Terminal 1:
 
 ```bash
 cd /home/ubuntu/swss-common-example
-docker compose run --rm runner
+scripts/run_custom_tables_example.sh bridge --key demo --watch
 ```
 
 In another terminal, write CONFIG_DB:
@@ -94,13 +98,7 @@ Terminal 2:
 
 ```bash
 cd /home/ubuntu/swss-common-example
-docker compose run --rm \
-  --entrypoint python3 \
-  runner \
-  src/custom_tables/config_db_producer.py \
-  --key demo \
-  --enabled true \
-  --interval 10
+scripts/run_custom_tables_example.sh producer --key demo --enabled true --interval 10
 ```
 
 Verify through the container:
@@ -121,7 +119,7 @@ To keep the bridge running and republish when config changes:
 
 ```bash
 cd /home/ubuntu/swss-common-example
-docker compose run --rm runner
+scripts/run_custom_tables_example.sh bridge --key demo --watch
 ```
 
 ## Run On SONiC Or Host With swsscommon
@@ -238,6 +236,32 @@ Component/API selection:
 The scripts emit Redis `__VERIFY_MARKER:*` keys around important `swsscommon`
 API calls. Use Redis `MONITOR` or `scripts/verify_vlan_flow.sh` to see those
 markers interleaved with the real DB operations.
+
+Run each VLAN component with a one-line helper:
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh config-add 100
+scripts/run_vlan_table_example.sh mgrd --vlan-id 100
+scripts/run_vlan_table_example.sh orch --vlan-id 100
+scripts/run_vlan_table_example.sh syncd --vlan-id 100
+```
+
+Use `--watch` with `mgrd`, `orch`, or `syncd` to keep a component running in
+its own terminal:
+
+```bash
+scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
+```
+
+The same helper can delete a VLAN or run the full verification flow:
+
+```bash
+scripts/run_vlan_table_example.sh config-del 100
+scripts/run_vlan_table_example.sh verify 100
+```
 
 For a one-command verification run that also captures timestamped Redis
 `MONITOR` output:
