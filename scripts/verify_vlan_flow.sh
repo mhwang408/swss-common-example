@@ -34,7 +34,7 @@ show_redis() {
 }
 
 run_runner() {
-    compose run --rm --entrypoint python3 runner "$@"
+    compose run --rm runner "$@"
 }
 
 stop_monitor() {

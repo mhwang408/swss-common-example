@@ -43,4 +43,3 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /home/ubuntu/swss-common-example
 
 ENTRYPOINT ["/entrypoint.sh"]
-# CMD ["python3", "src/custom_tables/config_to_appl_bridge.py", "--key", "demo", "--watch"]
