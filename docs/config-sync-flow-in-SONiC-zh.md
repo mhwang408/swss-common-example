@@ -27,8 +27,8 @@ library，而且必須選對 table family。
 | --- | --- |
 | `Table` | config command 直接 materialize `CONFIG_DB VLAN|Vlan100`。 |
 | `SubscriberStateTable` | `vlanmgrd` watch `CONFIG_DB VLAN` updates。 |
-| `ProducerStateTable` / `ConsumerStateTable` | `vlanmgrd` 寫 APPL pending state，`VlanOrch` consume 並 materialize final APPL_DB hash。 |
-| `ProducerTable` / `ConsumerTable` | `VlanOrch` enqueue ordered ASIC operation，`syncd` consume 並 materialize final ASIC_DB hash。 |
+| `ProducerStateTable` / `ConsumerStateTable` | `vlanmgrd` 寫 APPL pending state，`PortsOrch` consume 並 materialize final APPL_DB hash。 |
+| `ProducerTable` / `ConsumerTable` | `PortsOrch` enqueue ordered ASIC operation，`syncd` consume 並 materialize final ASIC_DB hash。 |
 
 ## End-To-End VLAN Flow
 
@@ -45,7 +45,7 @@ vlanmgrd.py
   -> DB 0 pending hash: _VLAN_TABLE:Vlan100
   -> DB 0 pending set:  VLAN_TABLE_KEY_SET
 
-vlanorch.py
+portorch.py
   ConsumerStateTable(APPL_DB, "VLAN_TABLE").pop()
   -> materialize DB 0 final hash: VLAN_TABLE:Vlan100
   ProducerTable(ASIC_DB, "ASIC_STATE:SAI_OBJECT_TYPE_VLAN").set(...)
@@ -56,6 +56,14 @@ syncd.py
   -> materialize DB 1 final hash:
      ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
   -> pretend write ASIC
+  NotificationProducer(ASIC_DB, "SAI_RESPONSE").send(...)
+  -> SAI response channel 回到 PortsOrch / sairedis requester
+
+syncd.py async notification
+  NotificationProducer(ASIC_DB, "NOTIFICATIONS").send("port_state_change", ...)
+  -> PortsOrch NotificationConsumer
+  -> STATE_DB PORT_TABLE|Ethernet0
+  -> vlanmgrd / other manager daemons
 ```
 
 端到端關係：
@@ -65,9 +73,12 @@ syncd.py
 | 1 | config command | user intent | `Table.set` | `CONFIG_DB VLAN|Vlan100` | config 是 durable desired config，直接寫 hash；不需要 queue。 |
 | 2 | vlanmgrd | `CONFIG_DB VLAN` | `Table.get` / `SubscriberStateTable.pop` | 讀到 `Vlan100 SET` | 啟動時可 replay 既有 config；watch 模式可訂閱後續 config change。 |
 | 3 | vlanmgrd | config event | `ProducerStateTable.set` | `_VLAN_TABLE:Vlan100` + `VLAN_TABLE_KEY_SET` | APPL_DB 是 desired state；同 key 多次更新可 coalesce，只需要最新狀態。 |
-| 4 | VlanOrch | APPL_DB pending | `ConsumerStateTable.pop` | `VLAN_TABLE:Vlan100` | APPL table owner 消費 pending state，並 materialize final APPL_DB hash。 |
-| 5 | VlanOrch | APPL_DB final/update | `ProducerTable.set` | ASIC_DB queue | ASIC operation 需要有序傳給 syncd；每個 create/remove/set operation 都重要。 |
+| 4 | PortsOrch | APPL_DB pending | `ConsumerStateTable.pop` | `VLAN_TABLE:Vlan100` | APPL table owner 消費 pending state，並 materialize final APPL_DB hash。 |
+| 5 | PortsOrch | APPL_DB final/update | `ProducerTable.set` | ASIC_DB queue | ASIC operation 需要有序傳給 syncd；每個 create/remove/set operation 都重要。 |
 | 6 | syncd | ASIC_DB queue | `ConsumerTable.pop` | ASIC_DB final hash + fake ASIC write | syncd 是 ASIC_DB operation stream 的 consumer；pop 時 materialize final ASIC_DB hash。 |
+| 7 | syncd | SAI operation result | `NotificationProducer.send` | ASIC_DB response channel | SAI create/remove 的同步結果回給 requester；本例用 `SAI_RESPONSE` channel 表示。 |
+| 8 | syncd | ASIC async event | `NotificationProducer.send` | ASIC_DB `NOTIFICATIONS` channel | port state change 這類 async event 不是 table operation queue。 |
+| 9 | PortsOrch | ASIC async notification | `NotificationConsumer.pop` + `Table.set` | `STATE_DB PORT_TABLE|Ethernet0` | `PortsOrch` 把 syncd notification 轉成可被 mgrd/其他 daemon 讀取的 state table。 |
 
 最重要的結論：
 
@@ -77,11 +88,19 @@ CONFIG_DB final hash:
 
 APPL_DB final hash:
   不是 vlanmgrd materialize
-  是 VlanOrch 的 ConsumerStateTable.pop materialize
+  是 PortsOrch 的 ConsumerStateTable.pop materialize
 
 ASIC_DB final hash:
-  不是 VlanOrch materialize
+  不是 PortsOrch materialize
   是 syncd 的 ConsumerTable.pop materialize
+
+SAI response:
+  不是另一個 ASIC_STATE table
+  是 syncd 透過 ASIC_DB response channel 回覆 requester
+
+Async notification:
+  不是 vlanmgrd 直接從 syncd 收到
+  是 syncd -> ASIC_DB NOTIFICATIONS -> PortsOrch -> STATE_DB -> vlanmgrd
 ```
 
 ### Redis Contract
@@ -90,13 +109,15 @@ SONiC Redis table 本質上不是 Redis 需要預先宣告的 schema，而是「
 
 以 VLAN 建立流程為例，至少要明確知道：
 
-- 使用哪個 DB：`CONFIG_DB` 是 DB 4，`APPL_DB` 是 DB 0，`ASIC_DB` 是 DB 1。
+- 使用哪個 DB：`CONFIG_DB` 是 DB 4，`APPL_DB` 是 DB 0，`ASIC_DB` 是 DB 1，`STATE_DB` 是 DB 6。
 - table 名稱：`CONFIG_DB` 使用 `VLAN`，`APPL_DB` 使用 `VLAN_TABLE`。
 - `ASIC_DB` 的 VLAN 範例使用 `ASIC_STATE:SAI_OBJECT_TYPE_VLAN`。
+- SAI response 用 ASIC_DB response channel；async event 用 ASIC_DB `NOTIFICATIONS` channel。
+- async port state 最後會被 PortsOrch materialize 到 `STATE_DB PORT_TABLE|Ethernet0`。
 - key separator：`CONFIG_DB` 用 `|`，`APPL_DB` / `ASIC_DB` 用 `:`。
 - 欄位語意：`vlanid` 表示 VLAN ID。
 - 寫入權：CLI/config tooling 寫 `CONFIG_DB`，`vlanmgrd` 寫 `APPL_DB`
-  pending state，`VlanOrch` 消費 `APPL_DB` update 並 enqueue `ASIC_DB`
+  pending state，`PortsOrch` 消費 `APPL_DB` update 並 enqueue `ASIC_DB`
   operation，`syncd` 消費 `ASIC_DB` queue 並假裝寫 ASIC。
 - 事件語意：`CONFIG_DB` 用 direct hash；`APPL_DB` 用 latest-state pending
   update；`ASIC_DB` 用 ordered operation queue。
@@ -109,14 +130,14 @@ config vlan add 100
     -> vlanmgrd SubscriberStateTable
     -> APPL_DB _VLAN_TABLE:Vlan100
     -> APPL_DB VLAN_TABLE_KEY_SET
-    -> VlanOrch ConsumerStateTable
+    -> PortsOrch ConsumerStateTable
     -> APPL_DB VLAN_TABLE:Vlan100
     -> ASIC_DB ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
     -> syncd ConsumerTable
     -> ASIC_DB ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
 ```
 
-`_VLAN_TABLE:Vlan100` 和 `VLAN_TABLE_KEY_SET` 是 `ProducerStateTable` 產生的 pending state。`VlanOrch` 會用 `ConsumerStateTable` 消費 pending state，並 materialize 或 apply 最終的 `VLAN_TABLE:Vlan100`。
+`_VLAN_TABLE:Vlan100` 和 `VLAN_TABLE_KEY_SET` 是 `ProducerStateTable` 產生的 pending state。`PortsOrch` 會用 `ConsumerStateTable` 消費 pending state，並 materialize 或 apply 最終的 `VLAN_TABLE:Vlan100`。
 `ASIC_DB` 的 queue 是 `ProducerTable` 產生的 operation stream；最終
 `ASIC_STATE:...` hash 是 `syncd` 的 `ConsumerTable.pop()` materialize。
 
@@ -177,11 +198,11 @@ HSET _VLAN_TABLE:Vlan100 vlanid 100
 
 它不會直接寫 `VLAN_TABLE:Vlan100`。選 `ProducerStateTable` 的原因是
 APPL_DB 這段是 desired state publication：如果短時間對同一個 VLAN 做多次更新，
-VlanOrch 通常只需要最新狀態，不需要每一個 intermediate edit。
+PortsOrch 通常只需要最新狀態，不需要每一個 intermediate edit。
 
-### APPL_DB -> VlanOrch：`ConsumerStateTable`
+### APPL_DB -> PortsOrch：`ConsumerStateTable`
 
-`VlanOrch` 是 `VLAN_TABLE` 的 owner。它消費 pending state：
+`PortsOrch` 是 `VLAN_TABLE` 的 owner。它消費 pending state：
 
 ```python
 consumer = swsscommon.ConsumerStateTable(appl_db, "VLAN_TABLE")
@@ -201,9 +222,9 @@ DEL _VLAN_TABLE:Vlan100
 真正把 `_VLAN_TABLE:Vlan100` 轉成 `VLAN_TABLE:Vlan100` 的是
 `ConsumerStateTable.pop()`。
 
-### VlanOrch -> ASIC_DB：`ProducerTable`
+### PortsOrch -> ASIC_DB：`ProducerTable`
 
-VlanOrch 根據 APPL_DB desired state 產生 ASIC operation：
+PortsOrch 根據 APPL_DB desired state 產生 ASIC operation：
 
 ```python
 asic_db = swsscommon.DBConnector("ASIC_DB", 0, False)
@@ -213,7 +234,7 @@ asic_producer = swsscommon.ProducerTable(
 )
 asic_producer.set("oid:0x26000000000100", [
     ("SAI_VLAN_ATTR_VLAN_ID", "100"),
-    ("source", "VlanOrch"),
+    ("source", "PortsOrch"),
 ])
 ```
 
@@ -222,7 +243,7 @@ Redis `MONITOR` 可看到：
 ```text
 LPUSH ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE \
   oid:0x26000000000100 \
-  ["SAI_VLAN_ATTR_VLAN_ID","100","source","VlanOrch"] \
+  ["SAI_VLAN_ATTR_VLAN_ID","100","source","PortsOrch"] \
   SSET
 ```
 
@@ -232,7 +253,7 @@ latest state。
 
 ### ASIC_DB -> syncd -> ASIC：`ConsumerTable`
 
-`syncd` 消費 VlanOrch enqueue 的 ASIC operation：
+`syncd` 消費 PortsOrch enqueue 的 ASIC operation：
 
 ```python
 asic_consumer = swsscommon.ConsumerTable(
@@ -248,7 +269,7 @@ Redis `MONITOR` 可看到：
 LRANGE ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
 LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
 HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
-HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 source VlanOrch
+HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 source PortsOrch
 ```
 
 這就是 ASIC_DB final hash materialize 的時間點。接著本專案的 tiny
@@ -276,7 +297,7 @@ ASIC_VLAN_TABLE_NAME = "ASIC_STATE:SAI_OBJECT_TYPE_VLAN"
 VLAN_PREFIX = "Vlan"
 ```
 
-Redis 不會檢查這些 table 名稱是否存在於 `schema.h`。常數的價值是讓 CLI 模擬程式、`vlanmgrd`、`vlanorch` 使用同一份命名合約。
+Redis 不會檢查這些 table 名稱是否存在於 `schema.h`。常數的價值是讓 CLI 模擬程式、`vlanmgrd`、`portorch` 使用同一份命名合約。
 
 ### 是否需要 YANG 或 gen_cfg_schema.py
 
@@ -495,7 +516,7 @@ consumer:
   apply each operation
 ```
 
-VLAN_TABLE 的常見 desired-state 流程通常不需要這組，因為 `VlanOrch` 多半只需要某個 VLAN key 的最新 desired state，而不是每個 intermediate edit。
+VLAN_TABLE 的常見 desired-state 流程通常不需要這組，因為 `PortsOrch` 多半只需要某個 VLAN key 的最新 desired state，而不是每個 intermediate edit。
 
 ### ProducerStateTable 與 ConsumerStateTable
 
@@ -533,7 +554,7 @@ consumer:
 vlan_table.delete("Vlan100")
 ```
 
-`VlanOrch` 則用 `ConsumerStateTable` 消費：
+`PortsOrch` 則用 `ConsumerStateTable` 消費：
 
 ```python
 appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
@@ -564,7 +585,7 @@ coalescing 規則：
 - 相同 key、不同 fields：合併成同一份 latest snapshot。
 - 不同 keys：處理順序不保證。
 
-所以 `ProducerStateTable` 很適合 `CONFIG_DB VLAN -> vlanmgrd -> APPL_DB VLAN_TABLE` 的 desired state publication。`VlanOrch` 通常只需要最新 APPL_DB desired state，不需要每一次 config edit 的 intermediate event。
+所以 `ProducerStateTable` 很適合 `CONFIG_DB VLAN -> vlanmgrd -> APPL_DB VLAN_TABLE` 的 desired state publication。`PortsOrch` 通常只需要最新 APPL_DB desired state，不需要每一次 config edit 的 intermediate event。
 
 ## API 選擇與 Ownership
 
@@ -578,10 +599,10 @@ vlanmgrd 觀察 CONFIG_DB VLAN:
 vlanmgrd 發布 APPL_DB VLAN_TABLE:
   ProducerStateTable
 
-VlanOrch 消費 APPL_DB VLAN_TABLE:
+PortsOrch 消費 APPL_DB VLAN_TABLE:
   ConsumerStateTable
 
-VlanOrch 發布 ASIC_DB operation:
+PortsOrch 發布 ASIC_DB operation:
   ProducerTable
 
 syncd 消費 ASIC_DB operation:
@@ -602,10 +623,10 @@ APPL_DB app writer:
   vlanmgrd ProducerStateTable("VLAN_TABLE")
 
 APPL_DB table owner:
-  VlanOrch ConsumerStateTable("VLAN_TABLE")
+  PortsOrch ConsumerStateTable("VLAN_TABLE")
 
 ASIC_DB operation producer:
-  VlanOrch ProducerTable("ASIC_STATE:SAI_OBJECT_TYPE_VLAN")
+  PortsOrch ProducerTable("ASIC_STATE:SAI_OBJECT_TYPE_VLAN")
 
 ASIC_DB operation consumer:
   syncd ConsumerTable("ASIC_STATE:SAI_OBJECT_TYPE_VLAN")
@@ -664,10 +685,10 @@ APPL_DB VLAN_TABLE pending state:
   producer = vlanmgrd
 
 APPL_DB VLAN_TABLE consumer:
-  owner = VlanOrch in orchagent
+  owner = PortsOrch in orchagent
 
 ASIC_DB ASIC_STATE operation queue:
-  producer = VlanOrch / orchagent
+  producer = PortsOrch / orchagent
   consumer = syncd
 
 ASIC_DB final ASIC_STATE hash:
@@ -714,7 +735,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/vlanorch.py --vlan-id 100 --watch
+  src/vlan_table/portorch.py --vlan-id 100 --watch
 ```
 
 ```bash
@@ -751,7 +772,7 @@ scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
 ```
 
 ```bash
@@ -780,10 +801,12 @@ cd /home/ubuntu/swss-common-example
 scripts/run_vlan_table_example.sh verify 100
 ```
 
-這個 script 會清掉 DB 0、DB 1、DB 4，依序執行：
+這個 script 會清掉 DB 0、DB 1、DB 4、DB 6，依序執行：
 
 ```text
-config command -> CONFIG_DB check -> vlanmgrd -> APPL_DB check -> vlanorch -> ASIC_DB check -> syncd
+config command -> CONFIG_DB check -> vlanmgrd -> APPL_DB check
+  -> syncd/portorch SAI request-response check
+  -> syncd async notification -> portorch -> STATE_DB -> vlanmgrd check
 ```
 
 它會同時啟動 Redis `MONITOR`，並輸出兩份檔案：
@@ -802,6 +825,7 @@ docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 6 HGETALL 'PORT_TABLE|Ethernet0'
 ```
 
 ## Appendix: Final Table Materialization
@@ -816,10 +840,10 @@ APPL_DB pending _VLAN_TABLE:Vlan100 / VLAN_TABLE_KEY_SET:
   vlanmgrd.py ProducerStateTable.set 寫入
 
 APPL_DB final VLAN_TABLE:Vlan100:
-  vlanorch.py ConsumerStateTable.pop 裡的 Lua HSET 寫入
+  portorch.py ConsumerStateTable.pop 裡的 Lua HSET 寫入
 
 ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE:
-  vlanorch.py ProducerTable.set 裡的 Lua LPUSH 寫入
+  portorch.py ProducerTable.set 裡的 Lua LPUSH 寫入
 
 ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100:
   syncd.py ConsumerTable.pop 裡的 Lua HSET 寫入
@@ -842,12 +866,12 @@ if state == swsscommon.Select.OBJECT:
     key, op, field_values = asic_consumer.pop()
 ```
 
-當 `vlanorch.py` 已經用 `ProducerTable.set()` 寫入 queue 後，Redis 裡會先有：
+當 `portorch.py` 已經用 `ProducerTable.set()` 寫入 queue 後，Redis 裡會先有：
 
 ```text
 DB 1 list: ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
   SSET
-  ["SAI_VLAN_ATTR_VLAN_ID","100","source","VlanOrch"]
+  ["SAI_VLAN_ATTR_VLAN_ID","100","source","PortsOrch"]
   oid:0x26000000000100
 ```
 
@@ -857,7 +881,7 @@ DB 1 list: ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
 LRANGE ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
 LTRIM ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
 HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 SAI_VLAN_ATTR_VLAN_ID 100
-HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 source VlanOrch
+HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 source PortsOrch
 ```
 
 然後 Python 端拿到：
@@ -867,7 +891,7 @@ key = "oid:0x26000000000100"
 op = "SET"
 field_values = [
   ("SAI_VLAN_ATTR_VLAN_ID", "100"),
-  ("source", "VlanOrch"),
+  ("source", "PortsOrch"),
 ]
 ```
 

@@ -247,7 +247,7 @@ consumer:
   apply each operation
 ```
 
-本專案的 VLAN ASIC_DB 範例中，`vlanorch.py` 用 `ProducerTable` 把 ASIC_DB
+本專案的 VLAN ASIC_DB 範例中，`portorch.py` 用 `ProducerTable` 把 ASIC_DB
 operation 放進 queue：
 
 ```text
@@ -287,7 +287,7 @@ key = "oid:0x26000000000100"
 op = "SET"
 field_values = [
   ("SAI_VLAN_ATTR_VLAN_ID", "100"),
-  ("source", "VlanOrch"),
+  ("source", "PortsOrch"),
 ]
 ```
 
@@ -332,7 +332,7 @@ SADD VLAN_TABLE_KEY_SET Vlan100
 HSET _VLAN_TABLE:Vlan100 vlanid 100
 ```
 
-最終 APPL_DB hash 是 `vlanorch.py` 的 `ConsumerStateTable.pop()` materialize：
+最終 APPL_DB hash 是 `portorch.py` 的 `ConsumerStateTable.pop()` materialize：
 
 ```text
 SPOP VLAN_TABLE_KEY_SET
@@ -486,18 +486,31 @@ config vlan add 100
   -> CONFIG_DB VLAN|Vlan100
   -> vlanmgrd
   -> APPL_DB pending _VLAN_TABLE:Vlan100
-  -> VlanOrch
+  -> PortsOrch
   -> ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
   -> syncd
   -> ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
+  -> ASIC_DB SAI_RESPONSE channel
+  -> PortsOrch
+```
+
+它也包含 syncd 反方向送出的 async notification path。真實 SONiC 中，port
+oper status 這類事件不是 vlanmgrd 直接從 syncd 收到，而是：
+
+```text
+syncd
+  -> ASIC_DB NOTIFICATIONS channel
+  -> PortsOrch
+  -> STATE_DB PORT_TABLE|Ethernet0
+  -> vlanmgrd / other manager daemons
 ```
 
 實作把每個 SONiC component role 對應到小型 Python script：
 
 - `src/vlan_table/config_vlan_command.py` 模擬 `config vlan add/del`。
-- `src/vlan_table/vlanmgrd.py` 把 `CONFIG_DB VLAN` 轉成 APPL pending state。
-- `src/vlan_table/vlanorch.py` consume APPL pending state 並 enqueue ASIC operation。
-- `src/vlan_table/syncd.py` consume ASIC operation 並輸出 fake ASIC write。
+- `src/vlan_table/vlanmgrd.py` 把 `CONFIG_DB VLAN` 轉成 APPL pending state，也可觀察 `STATE_DB PORT_TABLE`。
+- `src/vlan_table/portorch.py` 模擬真實 `PortsOrch`：consume APPL pending state、enqueue ASIC operation、讀 SAI response、處理 async ASIC notification。
+- `src/vlan_table/syncd.py` consume ASIC operation、送出 fake SAI response，也可送出 async port notification。
 
 ## Running The Examples
 
@@ -548,7 +561,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/vlanorch.py --vlan-id 100 --watch
+  src/vlan_table/portorch.py --vlan-id 100 --watch
 ```
 
 ```bash
@@ -589,7 +602,7 @@ scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
 ```
 
 ```bash
@@ -628,6 +641,7 @@ docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 6 HGETALL 'PORT_TABLE|Ethernet0'
 ```
 
 ## Appendix: Final Table Materialization

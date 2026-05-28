@@ -257,7 +257,7 @@ consumer:
   apply each operation
 ```
 
-For the VLAN ASIC_DB example in this repo, `vlanorch.py` uses `ProducerTable`
+For the VLAN ASIC_DB example in this repo, `portorch.py` uses `ProducerTable`
 to enqueue an ASIC_DB operation:
 
 ```text
@@ -297,7 +297,7 @@ key = "oid:0x26000000000100"
 op = "SET"
 field_values = [
   ("SAI_VLAN_ATTR_VLAN_ID", "100"),
-  ("source", "VlanOrch"),
+  ("source", "PortsOrch"),
 ]
 ```
 
@@ -347,7 +347,7 @@ SADD VLAN_TABLE_KEY_SET Vlan100
 HSET _VLAN_TABLE:Vlan100 vlanid 100
 ```
 
-The final APPL_DB hash is materialized later by `vlanorch.py`
+The final APPL_DB hash is materialized later by `portorch.py`
 `ConsumerStateTable.pop()`:
 
 ```text
@@ -505,20 +505,34 @@ config vlan add 100
   -> CONFIG_DB VLAN|Vlan100
   -> vlanmgrd
   -> APPL_DB pending _VLAN_TABLE:Vlan100
-  -> VlanOrch
+  -> PortsOrch
   -> ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
   -> syncd
   -> ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
+  -> ASIC_DB SAI_RESPONSE channel
+  -> PortsOrch
+```
+
+It also models the async notification direction used for events such as port
+state changes:
+
+```text
+syncd
+  -> ASIC_DB NOTIFICATIONS channel
+  -> PortsOrch
+  -> STATE_DB PORT_TABLE|Ethernet0
+  -> vlanmgrd / other manager daemons
 ```
 
 The implementation maps each SONiC component role to a small Python script:
 
 - `src/vlan_table/config_vlan_command.py` emulates `config vlan add/del`.
-- `src/vlan_table/vlanmgrd.py` bridges `CONFIG_DB VLAN` to APPL pending state.
-- `src/vlan_table/vlanorch.py` consumes APPL pending state and queues ASIC
-  operations.
-- `src/vlan_table/syncd.py` consumes ASIC operations and logs a fake ASIC
-  write.
+- `src/vlan_table/vlanmgrd.py` bridges `CONFIG_DB VLAN` to APPL pending state
+  and can observe `STATE_DB PORT_TABLE`.
+- `src/vlan_table/portorch.py` consumes APPL pending state and queues ASIC
+  operations, reads SAI responses, and handles async ASIC notifications.
+- `src/vlan_table/syncd.py` consumes ASIC operations, logs a fake ASIC write,
+  sends SAI responses, and can emit async port notifications.
 
 ## Running The Examples
 
@@ -559,7 +573,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
   src/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
-For the VLAN flow, start `syncd`, `vlanorch`, and `vlanmgrd` in separate
+For the VLAN flow, start `syncd`, `portorch`, and `vlanmgrd` in separate
 terminals, then run the config command:
 
 ```bash
@@ -571,7 +585,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/vlanorch.py --vlan-id 100 --watch
+  src/vlan_table/portorch.py --vlan-id 100 --watch
 ```
 
 ```bash
@@ -613,7 +627,7 @@ scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
 ```
 
 ```bash
@@ -652,6 +666,7 @@ docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 6 HGETALL 'PORT_TABLE|Ethernet0'
 ```
 
 ## Appendix: Final Table Materialization

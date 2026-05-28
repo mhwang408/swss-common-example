@@ -7,6 +7,7 @@ import argparse
 
 from vlan_schema import APP_VLAN_TABLE_NAME as APPL_TABLE
 from vlan_schema import CFG_VLAN_TABLE_NAME as CONFIG_TABLE
+from vlan_schema import STATE_PORT_TABLE_NAME
 from vlan_schema import VLAN_PREFIX
 from vlan_log import add_log_argument
 from vlan_log import configure_logger
@@ -94,6 +95,7 @@ def main():
         description="Subscribe to CONFIG_DB VLAN changes and publish APPL_DB VLAN_TABLE updates."
     )
     parser.add_argument("--vlan-id", default="100", help="only process this VLAN ID")
+    parser.add_argument("--state-port", help="watch/read STATE_DB PORT_TABLE for this port and exit")
     parser.add_argument(
         "--watch",
         action="store_true",
@@ -109,6 +111,35 @@ def main():
 
     if args.db_config:
         swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
+
+    if args.state_port:
+        state_db = swsscommon.DBConnector("STATE_DB", 0, False)
+        state_table = swsscommon.Table(state_db, STATE_PORT_TABLE_NAME)
+        state_subscriber = swsscommon.SubscriberStateTable(state_db, STATE_PORT_TABLE_NAME)
+        selector = swsscommon.Select()
+        selector.addSelectable(state_subscriber)
+
+        print("vlanmgrd: waiting for STATE_DB %s|%s updates" % (STATE_PORT_TABLE_NAME, args.state_port))
+        if not args.watch:
+            status, field_values = state_table.get(args.state_port)
+            if status:
+                print("vlanmgrd: STATE_DB %s|%s SET" % (STATE_PORT_TABLE_NAME, args.state_port))
+                for field, value in field_values:
+                    print("  %s=%s" % (field, value))
+                return
+
+        while True:
+            state, selectable = selector.select()
+            if state != swsscommon.Select.OBJECT:
+                continue
+            key, op, field_values = state_subscriber.pop()
+            if key != args.state_port:
+                continue
+            print("vlanmgrd: STATE_DB %s|%s %s" % (STATE_PORT_TABLE_NAME, key, op))
+            for field, value in field_values:
+                print("  %s=%s" % (field, value))
+            if not args.watch:
+                return
 
     key_filter = "%s%s" % (VLAN_PREFIX, args.vlan_id)
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)

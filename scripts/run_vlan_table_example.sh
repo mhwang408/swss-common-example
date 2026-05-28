@@ -15,14 +15,14 @@ Usage:
   scripts/run_vlan_table_example.sh config-add [vlan_id] [args...]
   scripts/run_vlan_table_example.sh config-del [vlan_id] [args...]
   scripts/run_vlan_table_example.sh mgrd [args...]
-  scripts/run_vlan_table_example.sh orch [args...]
+  scripts/run_vlan_table_example.sh portorch [args...]
   scripts/run_vlan_table_example.sh syncd [args...]
   scripts/run_vlan_table_example.sh verify [vlan_id]
 
 Examples:
   scripts/run_vlan_table_example.sh config-add 100
   scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
-  scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+  scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
   scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
   scripts/run_vlan_table_example.sh verify 100
 EOF
@@ -54,8 +54,8 @@ case "$component" in
     mgrd)
         target=(src/vlan_table/vlanmgrd.py)
         ;;
-    orch)
-        target=(src/vlan_table/vlanorch.py)
+    portorch)
+        target=(src/vlan_table/portorch.py)
         ;;
     syncd)
         target=(src/vlan_table/syncd.py)

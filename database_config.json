@@ -21,6 +21,11 @@
             "id": 4,
             "separator": "|",
             "instance": "redis"
+        },
+        "STATE_DB": {
+            "id": 6,
+            "separator": "|",
+            "instance": "redis"
         }
     },
     "VERSION": "1.0"
