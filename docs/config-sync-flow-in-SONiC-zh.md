@@ -1,11 +1,38 @@
-# 筆記：add VLAN 如何從 CONFIG_DB sync 到 ASIC
+# VLAN 設定如何從 CONFIG_DB 同步到 ASIC
 
-這份筆記用 `config vlan add 100` 當主線，說明設定如何從 `CONFIG_DB`
+這份文件用 `config vlan add 100` 當主線，說明設定如何從 `CONFIG_DB`
 一路流到 `APPL_DB`、`ASIC_DB`，最後由 `syncd` 套用到 ASIC。重點不是
 Redis table 名稱本身，而是每一段 component 為什麼選不同的
 `sonic-swss-common` table API。
 
-## 一頁總覽
+讀者目標是能看懂 VLAN add/delete 在 SONiC-style DB pipeline 中的責任邊界，並能
+用本 repo 的 `vlan_table` 範例驗證每個 materialization point。本文範圍限於教學版
+control-plane flow；不涵蓋真實 orchagent、syncd 或 ASIC SDK 行為。
+
+## 系統模型
+
+`sonic-swss-common` 是 SONiC control-plane components 讀寫 Redis-backed
+SONiC DB 的 shared client library。它不是 Redis server，也不是 generic
+Redis client；它把 SONiC DB name、table separator、producer/consumer queue、
+latest-state coalescing 與 notification pattern 包成 component 可以共用的 API。
+
+用 raw `redis-py` 也能寫 Redis，但要自己處理 DB ID、separator、pending hash、
+key set、queue key 與 Lua atomicity。用 `sonic-swss-common` 的好處是行為更接近
+production SONiC component；代價是 runtime 需要 SONiC DB config 與 swsscommon
+library，而且必須選對 table family。
+
+這個 VLAN flow 會用到四類 table family：
+
+| Table family | 本例用途 |
+| --- | --- |
+| `Table` | config command 直接 materialize `CONFIG_DB VLAN|Vlan100`。 |
+| `SubscriberStateTable` | `vlanmgrd` watch `CONFIG_DB VLAN` updates。 |
+| `ProducerStateTable` / `ConsumerStateTable` | `vlanmgrd` 寫 APPL pending state，`VlanOrch` consume 並 materialize final APPL_DB hash。 |
+| `ProducerTable` / `ConsumerTable` | `VlanOrch` enqueue ordered ASIC operation，`syncd` consume 並 materialize final ASIC_DB hash。 |
+
+## End-To-End VLAN Flow
+
+### Flow Behavior
 
 ```text
 config_vlan_command.py
@@ -57,7 +84,7 @@ ASIC_DB final hash:
   是 syncd 的 ConsumerTable.pop materialize
 ```
 
-## 核心模型
+### Redis Contract
 
 SONiC Redis table 本質上不是 Redis 需要預先宣告的 schema，而是「key 命名慣例」加上「producer / consumer 合約」。
 
@@ -93,9 +120,9 @@ config vlan add 100
 `ASIC_DB` 的 queue 是 `ProducerTable` 產生的 operation stream；最終
 `ASIC_STATE:...` hash 是 `syncd` 的 `ConsumerTable.pop()` materialize。
 
-## 逐段拆解：為什麼不同 component 用不同 Table
+## Component Responsibilities
 
-### 1. config command -> CONFIG_DB：`Table`
+### config command -> CONFIG_DB：`Table`
 
 `config vlan add 100` 是使用者的 desired configuration。這份 config 要直接存在
 `CONFIG_DB`，讓後續 daemon 或重新啟動後的 replay 都能讀到。所以使用最直接的
@@ -117,7 +144,7 @@ DB 4 hash: VLAN|Vlan100
 這段不用 `ProducerTable` 或 `ProducerStateTable`，因為 CONFIG_DB 不是一個
 daemon-to-daemon work queue；它是 configuration source of truth。
 
-### 2. CONFIG_DB -> vlanmgrd：`Table.get` / `SubscriberStateTable`
+### CONFIG_DB -> vlanmgrd：`Table.get` / `SubscriberStateTable`
 
 `vlanmgrd` 有兩種讀 CONFIG_DB 的方式：
 
@@ -131,7 +158,7 @@ daemon-to-daemon work queue；它是 configuration source of truth。
 這段不用 `ConsumerStateTable`，因為 CONFIG_DB 是 direct hash + keyspace
 subscription，不是 `ProducerStateTable` 產生的 pending state。
 
-### 3. vlanmgrd -> APPL_DB：`ProducerStateTable`
+### vlanmgrd -> APPL_DB：`ProducerStateTable`
 
 `vlanmgrd` 把 config 轉成 application desired state：
 
@@ -152,7 +179,7 @@ HSET _VLAN_TABLE:Vlan100 vlanid 100
 APPL_DB 這段是 desired state publication：如果短時間對同一個 VLAN 做多次更新，
 VlanOrch 通常只需要最新狀態，不需要每一個 intermediate edit。
 
-### 4. APPL_DB -> VlanOrch：`ConsumerStateTable`
+### APPL_DB -> VlanOrch：`ConsumerStateTable`
 
 `VlanOrch` 是 `VLAN_TABLE` 的 owner。它消費 pending state：
 
@@ -174,7 +201,7 @@ DEL _VLAN_TABLE:Vlan100
 真正把 `_VLAN_TABLE:Vlan100` 轉成 `VLAN_TABLE:Vlan100` 的是
 `ConsumerStateTable.pop()`。
 
-### 5. VlanOrch -> ASIC_DB：`ProducerTable`
+### VlanOrch -> ASIC_DB：`ProducerTable`
 
 VlanOrch 根據 APPL_DB desired state 產生 ASIC operation：
 
@@ -203,7 +230,7 @@ LPUSH ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE \
 的 ordered operation stream。create/remove/set 的順序會影響硬體狀態，不能只保留
 latest state。
 
-### 6. ASIC_DB -> syncd -> ASIC：`ConsumerTable`
+### ASIC_DB -> syncd -> ASIC：`ConsumerTable`
 
 `syncd` 消費 VlanOrch enqueue 的 ASIC operation：
 
@@ -228,7 +255,9 @@ HSET ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100 source VlanOrch
 `syncd.py` 只印出 `pretend write ASIC`；真實 SONiC `syncd` 會把這個 SAI
 operation 轉成 ASIC SDK/SAI call。
 
-## Table 名稱定義在哪裡
+## Implementation Context
+
+### Table 名稱定義在哪裡
 
 VLAN 是 SONiC upstream 已存在的 table，不是 project-local custom table。正式 SONiC 程式通常會使用 upstream schema 常數，例如：
 
@@ -249,7 +278,7 @@ VLAN_PREFIX = "Vlan"
 
 Redis 不會檢查這些 table 名稱是否存在於 `schema.h`。常數的價值是讓 CLI 模擬程式、`vlanmgrd`、`vlanorch` 使用同一份命名合約。
 
-## 是否需要 YANG 或 gen_cfg_schema.py
+### 是否需要 YANG 或 gen_cfg_schema.py
 
 這個 VLAN_TABLE 教學例子不需要新增 YANG model 或跑 `gen_cfg_schema.py`。
 
@@ -267,7 +296,7 @@ Redis 不會檢查這些 table 名稱是否存在於 `schema.h`。常數的價�
 - YANG model。
 - upstream-style generated schema header。
 
-## database_config.json
+### database_config.json
 
 `database_config.json` 告訴 `swsscommon`：
 
@@ -335,11 +364,11 @@ appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
 
 第三個參數 `False` 表示使用 SONiC Unix socket，不走 TCP。
 
-## 四種 Table API
+## Table API Reference For The VLAN Flow
 
 選 API 時，核心問題是：你需要直接 hash access、CONFIG_DB change subscription、有序 operation stream，還是 latest-state coalescing。
 
-## 1. Table
+### Table
 
 `Table` 是直接 Redis hash access，並套用 SONiC table naming rule。
 
@@ -386,7 +415,7 @@ config vlan del 100
 
 `Table` 不會產生 producer / consumer message queue。若其他 daemon 要反應 `CONFIG_DB` 變化，應該用 `SubscriberStateTable` 訂閱。
 
-## 2. SubscriberStateTable
+### SubscriberStateTable
 
 `SubscriberStateTable` 用來 watch table update，最常用在 `CONFIG_DB`。在 VLAN 流程中，`vlanmgrd` 會訂閱 `CONFIG_DB VLAN`。
 
@@ -443,7 +472,7 @@ local Redis 必須啟用 keyspace notifications：
 
 `SubscriberStateTable` 只是觀察變化，不是 ownership boundary。`CONFIG_DB VLAN` 仍應由 CLI/config tooling 這類 config owner 寫入。
 
-## 3. ProducerTable / ConsumerTable
+### ProducerTable 與 ConsumerTable
 
 `ProducerTable` / `ConsumerTable` 是有序 operation stream。producer 送出每一個 operation，consumer 按順序 pop 並處理。
 
@@ -468,7 +497,7 @@ consumer:
 
 VLAN_TABLE 的常見 desired-state 流程通常不需要這組，因為 `VlanOrch` 多半只需要某個 VLAN key 的最新 desired state，而不是每個 intermediate edit。
 
-## 4. ProducerStateTable / ConsumerStateTable
+### ProducerStateTable 與 ConsumerStateTable
 
 `ProducerStateTable` / `ConsumerStateTable` 是 latest desired state 模型。producer 寫 pending state，consumer 負責 materialize 或 apply state。
 
@@ -537,7 +566,7 @@ coalescing 規則：
 
 所以 `ProducerStateTable` 很適合 `CONFIG_DB VLAN -> vlanmgrd -> APPL_DB VLAN_TABLE` 的 desired state publication。`VlanOrch` 通常只需要最新 APPL_DB desired state，不需要每一次 config edit 的 intermediate event。
 
-## 選擇總結
+## API 選擇與 Ownership
 
 ```text
 config vlan add/del:
@@ -582,7 +611,7 @@ ASIC_DB operation consumer:
   syncd ConsumerTable("ASIC_STATE:SAI_OBJECT_TYPE_VLAN")
 ```
 
-## Atomicity 與 Lock
+### Atomicity 與 Lock
 
 producer / consumer table APIs 內部會使用 Redis Lua，讓它們負責的 multi-command Redis operation 在 Redis server 裡 atomic 執行。
 
@@ -620,7 +649,7 @@ write another APPL_DB table
 
 只有真的存在 shared resource，而且所有 writer / reader 都會遵守時，才加 explicit Redis lock。
 
-## Ownership Pattern
+### Ownership Pattern
 
 VLAN_TABLE 的 ownership 可以理解成：
 
@@ -653,13 +682,102 @@ multiple daemons -> same APPL_DB VLAN_TABLE key range
 
 除非有明確 owner、allocator、version check 或 explicit lock。
 
-## 本專案 VLAN_TABLE 最小流程
+## Running The Example
+
+### Test environment
+
+本機測試環境使用 repo 的 Compose stack：
+
+- `database`：Redis，socket 在 `/var/run/redis/redis.sock`。
+- `runner`：build/install local `sonic-swss-common` 的 container。
+- `swss-common-install`：掛在 `/usr/local` 的 named volume。
+
+初始化：
+
+```bash
+cd /home/ubuntu/swss-common-example
+sudo mkdir -p /var/run/redis
+docker compose build runner
+docker compose up -d database
+```
+
+### Method 1: Pure bash commands
+
+在三個 terminal 啟動 watch components：
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/syncd.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/vlanorch.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+```
+
+第四個 terminal 模擬 `config vlan add 100`：
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/config_vlan_command.py add 100
+```
+
+驗證 add path 後，可再測 delete：
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/config_vlan_command.py del 100
+```
+
+### Method 2: Helper scripts
+
+長時間 watch commands 建議用 helper scripts。它們會啟動 `database`、export
+`UID`/`GID`、把參數傳給 component，並在 `Ctrl-C` 時移除 runner container。
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh config-add 100
+```
+
+驗證 add path 後，可再測 delete：
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh config-del 100
+```
+
+## Verification
 
 最快的驗證方式是跑一鍵 script：
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/verify_vlan_flow.sh 100
+scripts/run_vlan_table_example.sh verify 100
 ```
 
 這個 script 會清掉 DB 0、DB 1、DB 4，依序執行：
@@ -674,6 +792,19 @@ config command -> CONFIG_DB check -> vlanmgrd -> APPL_DB check -> vlanorch -> AS
 /tmp/swss_vlan_monitor_*.log  # raw Redis MONITOR log
 /tmp/swss_vlan_pretty_*.log   # 依 __VERIFY_MARKER 分組的 pretty log
 ```
+
+檢查 Redis：
+
+```bash
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'VLAN|Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_VLAN_TABLE:Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_TABLE_KEY_SET'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+```
+
+## Appendix: Final Table Materialization
 
 目前用 `MONITOR` 驗證到的 materialization 結論是：
 
@@ -742,72 +873,3 @@ field_values = [
 
 本專案的 tiny syncd 只會印出這些欄位並輸出 `pretend write ASIC`，用來代表真正 SONiC
 `syncd` 接下來會把 SAI object operation 套到 ASIC。
-
-啟動 tiny syncd：
-
-```bash
-cd /home/ubuntu/swss-common-example
-docker compose run --rm \
-  --entrypoint python3 \
-  runner \
-  src/vlan_table/syncd.py \
-  --vlan-id 100 \
-  --watch
-```
-
-啟動 tiny VlanOrch：
-
-```bash
-cd /home/ubuntu/swss-common-example
-docker compose run --rm \
-  --entrypoint python3 \
-  runner \
-  src/vlan_table/vlanorch.py \
-  --vlan-id 100 \
-  --watch
-```
-
-啟動 tiny vlanmgrd：
-
-```bash
-cd /home/ubuntu/swss-common-example
-docker compose run --rm \
-  --entrypoint python3 \
-  runner \
-  src/vlan_table/vlanmgrd.py \
-  --vlan-id 100 \
-  --watch
-```
-
-模擬 `config vlan add 100`：
-
-```bash
-cd /home/ubuntu/swss-common-example
-docker compose run --rm \
-  --entrypoint python3 \
-  runner \
-  src/vlan_table/config_vlan_command.py \
-  add 100
-```
-
-模擬 `config vlan del 100`：
-
-```bash
-cd /home/ubuntu/swss-common-example
-docker compose run --rm \
-  --entrypoint python3 \
-  runner \
-  src/vlan_table/config_vlan_command.py \
-  del 100
-```
-
-檢查 Redis：
-
-```bash
-docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'VLAN|Vlan100'
-docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_VLAN_TABLE:Vlan100'
-docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_TABLE_KEY_SET'
-docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
-docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
-docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
-```

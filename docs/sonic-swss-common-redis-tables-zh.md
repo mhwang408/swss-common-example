@@ -1,8 +1,22 @@
-# 筆記：用 sonic-swss-common 定義與讀寫 SONiC Redis Tables
+# 用 sonic-swss-common 讀寫 SONiC Redis Tables
 
-這份筆記整理我們關於 `sonic-swss-common` 四種 table API 的討論，去掉重複說明，只保留實作時真正需要判斷的部分。
+這份文件說明小型 SONiC-style app 如何透過 `sonic-swss-common` 定義、寫入與觀察
+Redis-backed SONiC DB tables。
 
-## 核心模型
+讀者目標是選對 table API、理解它產生的 Redis key，並能跑完本 repo 的
+`custom_tables` 與 `vlan_table` 範例。本文範圍限於本機教學專案；不涵蓋完整
+SONiC schema upstream、CLI 整合或真實 ASIC programming。
+
+## 系統模型
+
+`sonic-swss-common` 是 SONiC 用來讀寫 Redis-backed SONiC DB 的 shared client
+library。和 raw Redis client（例如 `redis-py`）相比，它理解 SONiC DB name、
+table separator、producer/consumer queue、pending-state key set，以及
+`Select` event loop。raw Redis client 很適合 inspection 和 support tooling；
+但如果要模擬或實作 production-like SONiC component，應優先使用
+`sonic-swss-common`，避免自己手刻 table semantics。
+
+### 核心模型
 
 SONiC Redis table 本質上不是 Redis 需要預先宣告的 schema，而是「key 命名慣例」加上「producer / consumer 合約」。
 
@@ -26,7 +40,7 @@ APPL_DB CUSTOM_APPL_TABLE_KEY_SET
 
 `_CUSTOM_APPL_TABLE:demo` 和 `CUSTOM_APPL_TABLE_KEY_SET` 是 `ProducerStateTable` 產生的 pending state。真正的 APPL table owner 會用 `ConsumerStateTable` 消費 pending state，並 materialize 最終的 `CUSTOM_APPL_TABLE:demo`。
 
-## Table 名稱定義在哪裡
+### Table 名稱定義在哪裡
 
 custom table 不需要改 `sonic-swss-common` submodule。
 
@@ -55,7 +69,7 @@ EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME = "CUSTOM_APPL_TABLE"
 
 Redis 不會檢查這些 table 名稱是否存在於 `schema.h`。這些常數的價值是讓 producer / consumer 使用同一份命名合約。
 
-## 是否需要 YANG 或 gen_cfg_schema.py
+### 是否需要 YANG 或 gen_cfg_schema.py
 
 最小 custom Redis table example 不需要。
 
@@ -73,7 +87,7 @@ YANG model 和 `sonic-swss-common/gen_cfg_schema.py` 適合用在更完整的 SO
 - 用 `swsscommon` API 讀寫 Redis。
 - 不修改 `sonic-swss-common` submodule。
 
-## database_config.json
+### database_config.json
 
 `database_config.json` 告訴 `swsscommon`：
 
@@ -141,11 +155,11 @@ appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
 
 第三個參數 `False` 表示使用 SONiC Unix socket，不走 TCP。
 
-## 四種 Table API
+## Table API Families
 
 選 API 時，核心問題是：你需要直接 hash access、CONFIG_DB change subscription、有序 operation stream，還是 latest-state coalescing。
 
-## 1. Table
+### Table
 
 `Table` 是直接 Redis hash access，並套用 SONiC table naming rule。
 
@@ -175,7 +189,7 @@ DB 4 hash: CUSTOM_CONFIG_TABLE|demo
 
 `Table` 不會產生 producer / consumer message queue。若其他程式要反應 `CONFIG_DB` 變化，應該用 `SubscriberStateTable` 訂閱。
 
-## 2. SubscriberStateTable
+### SubscriberStateTable
 
 `SubscriberStateTable` 用來 watch table update，最常用在 `CONFIG_DB`。它適合 daemon 讀取 config change，然後計算 derived state。
 
@@ -210,7 +224,7 @@ local Redis 必須啟用 keyspace notifications：
 
 `SubscriberStateTable` 只是觀察變化，不是 ownership boundary。single writer / table owner 原則仍然要靠系統設計保證。
 
-## 3. ProducerTable / ConsumerTable
+### ProducerTable 與 ConsumerTable
 
 `ProducerTable` / `ConsumerTable` 是有序 operation stream。producer 送出每一個 operation，consumer 按順序 pop 並處理。
 
@@ -284,7 +298,7 @@ field_values = [
 
 如果 consumer 只需要某個 key 的最終 desired state，就不要用這組，通常 `ProducerStateTable` 更簡單也更適合。
 
-## 4. ProducerStateTable / ConsumerStateTable
+### ProducerStateTable 與 ConsumerStateTable
 
 `ProducerStateTable` / `ConsumerStateTable` 是 latest desired state 模型。producer 寫 pending state，consumer 負責 materialize 或 apply state。
 
@@ -342,7 +356,7 @@ coalescing 規則：
 
 所以 `ProducerStateTable` 很適合 `CONFIG_DB -> app -> APPL_DB` 的 desired state publication。consumer 通常只需要最新 APPL_DB desired state，不需要每一次 config edit 的 intermediate event。
 
-## 選擇總結
+## API 選擇與 Ownership
 
 ```text
 需要直接 hash read/write:
@@ -374,7 +388,7 @@ APPL_DB table owner:
   ConsumerStateTable
 ```
 
-## Atomicity 與 Lock
+### Atomicity 與 Lock
 
 producer / consumer table APIs 內部會使用 Redis Lua，讓它們負責的 multi-command Redis operation 在 Redis server 裡 atomic 執行。
 
@@ -412,7 +426,7 @@ write APPL_DB table Y
 
 只有真的存在 shared resource，而且所有 writer / reader 都會遵守時，才加 explicit Redis lock。
 
-## Ownership Pattern
+### Ownership Pattern
 
 好的切分：
 
@@ -431,24 +445,206 @@ CONFIG_DB: same table/key range -> multiple apps -> same APPL_DB table
 
 除非有明確 owner、allocator、version check 或 explicit lock。
 
-## 本專案最小流程
+## Example Flows
+
+### custom_tables
+
+`custom_tables` 是最小的 `CONFIG_DB -> APPL_DB` flow。它適合用來理解 custom
+table naming、config observation，以及沒有 APPL table owner 時的 APPL_DB pending
+state。
+
+`custom_tables` 是最小的 `CONFIG_DB -> APPL_DB` desired-state flow：
+
+```text
+config_db_producer.py
+  -> CONFIG_DB CUSTOM_CONFIG_TABLE|demo
+  -> config_to_appl_bridge.py
+  -> APPL_DB pending _CUSTOM_APPL_TABLE:demo
+```
+
+bridge 使用 `ProducerStateTable`，所以它只會寫 pending APPL state 與 key set。
+這個例子刻意沒有 APPL table owner，因此 final
+`CUSTOM_APPL_TABLE:demo` hash 不會被 materialize。
+
+實作把命名合約保留在本 repo：
+
+- `src/custom_tables/example_schema.py` 定義 Python table constants。
+- `src/custom_tables/example_schema.h` 定義 C/C++ table constants。
+- `src/custom_tables/config_db_producer.py` 用 `Table` 寫 CONFIG_DB。
+- `src/custom_tables/config_to_appl_bridge.py` 用 `SubscriberStateTable`
+  watch CONFIG_DB，並用 `ProducerStateTable` 發布 APPL pending state。
+
+### vlan_table
+
+`vlan_table` 補上 APPL_DB 與 ASIC_DB 的 consumer，讓同一組 table API 可以用完整
+`CONFIG_DB -> APPL_DB -> ASIC_DB` chain 觀察。
+
+`vlan_table` 模擬完整 SONiC-style VLAN chain：
+
+```text
+config vlan add 100
+  -> CONFIG_DB VLAN|Vlan100
+  -> vlanmgrd
+  -> APPL_DB pending _VLAN_TABLE:Vlan100
+  -> VlanOrch
+  -> ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+  -> syncd
+  -> ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
+```
+
+實作把每個 SONiC component role 對應到小型 Python script：
+
+- `src/vlan_table/config_vlan_command.py` 模擬 `config vlan add/del`。
+- `src/vlan_table/vlanmgrd.py` 把 `CONFIG_DB VLAN` 轉成 APPL pending state。
+- `src/vlan_table/vlanorch.py` consume APPL pending state 並 enqueue ASIC operation。
+- `src/vlan_table/syncd.py` consume ASIC operation 並輸出 fake ASIC write。
+
+## Running The Examples
+
+### Test environment
+
+本機測試環境使用：
+
+- `database`：Redis，socket 在 `/var/run/redis/redis.sock`。
+- `runner`：build/install local `sonic-swss-common` 的 container。
+- `swss-common-install`：掛在 `/usr/local` 的 named volume。
+
+初始化：
+
+```bash
+cd /home/ubuntu/swss-common-example
+sudo mkdir -p /var/run/redis
+docker compose build runner
+docker compose up -d database
+```
+
+### Method 1: Pure bash commands
 
 啟動 bridge：
 
 ```bash
-docker compose run --rm runner
+cd /home/ubuntu/swss-common-example
+docker compose up -d database
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/custom_tables/config_to_appl_bridge.py --key demo --watch
 ```
 
-寫入 CONFIG_DB：
+另一個 terminal 寫入 CONFIG_DB：
 
 ```bash
-docker compose run --rm   --entrypoint python3   runner   config_db_producer.py   --key demo   --enabled true   --interval 10   --db-config /tmp/database_config.json
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
-檢查 Redis：
+VLAN flow 可在三個 terminal 啟動 watch components，再送 config command：
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/syncd.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/vlanorch.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/config_vlan_command.py add 100
+```
+
+### Method 2: Helper scripts
+
+長時間 watch commands 建議用 helper scripts。它們會啟動 `database`、export
+`UID`/`GID`、把參數傳給 component，並在 `Ctrl-C` 時移除 runner container。
+
+Custom table flow：
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_custom_tables_example.sh bridge --key demo --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_custom_tables_example.sh producer --key demo --enabled true --interval 10
+```
+
+VLAN flow：
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh config-add 100
+```
+
+Full VLAN verification：
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh verify 100
+```
+
+## Verification
+
+Custom table checks：
 
 ```bash
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
+```
+
+VLAN checks：
+
+```bash
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'VLAN|Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_VLAN_TABLE:Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_TABLE_KEY_SET'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+```
+
+## Appendix: Final Table Materialization
+
+`Table` 會直接寫 final hash。`ProducerStateTable` 與 `ProducerTable` 不會；
+它們要由 matching consumer materialize final hash：
+
+```text
+ProducerStateTable.set:
+  writes _<TABLE>:<key> and <TABLE>_KEY_SET
+
+ConsumerStateTable.pop:
+  materializes <TABLE>:<key>
+
+ProducerTable.set:
+  writes <TABLE>_KEY_VALUE_OP_QUEUE
+
+ConsumerTable.pop:
+  materializes <TABLE>:<key>
 ```

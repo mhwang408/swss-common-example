@@ -1,9 +1,23 @@
-# Notes: Define And Access SONiC Redis Tables With sonic-swss-common
+# SONiC Redis Table Access With sonic-swss-common
 
-This note summarizes how to define and read/write Redis tables when building a
-small SONiC-style app on top of `sonic-swss-common`.
+This document explains how a small SONiC-style application defines, writes, and
+observes Redis-backed SONiC DB tables through `sonic-swss-common`.
 
-## Mental Model
+The reader goal is to choose the right table API, understand the Redis keys it
+creates, and run the two examples in this repository. The scope is the local
+`custom_tables` and `vlan_table` examples; it does not cover full SONiC schema
+upstreaming, CLI integration, or real ASIC programming.
+
+## System Model
+
+`sonic-swss-common` is SONiC's shared client library for Redis-backed SONiC
+DBs. Compared with raw Redis clients such as `redis-py`, it understands
+SONiC DB names, table separators, producer/consumer queues, pending-state key
+sets, and `Select`-based event loops. Raw Redis clients are still useful for
+inspection and support tooling, but production-like component behavior should
+use `sonic-swss-common` so the table semantics match SONiC.
+
+### Mental Model
 
 SONiC DB tables are Redis key naming conventions plus producer/consumer
 contracts. Redis itself does not require a table to be declared before use.
@@ -31,7 +45,7 @@ The underscore-prefixed APPL_DB hash and key set are produced by
 `ProducerStateTable`. A real APPL table owner would consume them with
 `ConsumerStateTable` and materialize the final `CUSTOM_APPL_TABLE:demo` hash.
 
-## Where To Define A Table
+### Where To Define A Table
 
 For a project-local custom table, do not modify the `sonic-swss-common`
 submodule. Keep the table names in project-owned files, for example a local
@@ -59,7 +73,7 @@ EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME = "CUSTOM_APPL_TABLE"
 That is enough because Redis does not validate table names against
 `schema.h`.
 
-## Do You Need YANG Or gen_cfg_schema.py?
+### Do You Need YANG Or gen_cfg_schema.py?
 
 Not for a minimal custom Redis table example.
 
@@ -78,7 +92,7 @@ Use YANG/schema generation later if the table must become a first-class SONiC
 configuration schema with validation, CLI/config tooling integration, and
 upstream-style generated constants.
 
-## database_config.json
+### database_config.json
 
 `database_config.json` tells `swsscommon` how to map logical DB names to Redis
 instances, DB indexes, separators, and socket paths.
@@ -141,13 +155,13 @@ appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
 The third argument is `False` here because this example uses the SONiC Unix
 socket, not TCP.
 
-## Four Table API Patterns
+## Table API Families
 
 These are the four table patterns discussed in this project. The important
 choice is whether the app needs direct hash access, config-change subscription,
 an ordered operation stream, or latest-state coalescing.
 
-### 1. Table
+### Table
 
 `Table` is direct Redis hash access with SONiC table naming rules.
 
@@ -179,7 +193,7 @@ DB 4 hash: CUSTOM_CONFIG_TABLE|demo
 needs to react to `CONFIG_DB` changes, it should subscribe with
 `SubscriberStateTable`.
 
-### 2. SubscriberStateTable
+### SubscriberStateTable
 
 `SubscriberStateTable` watches table updates, most commonly in `CONFIG_DB`.
 It is the right API for an app that reacts to config changes and then computes
@@ -219,7 +233,7 @@ Local Redis must enable notifications:
 changes; the single-writer/table-owner rule still has to come from the system
 design.
 
-### 3. ProducerTable / ConsumerTable
+### ProducerTable And ConsumerTable
 
 `ProducerTable` and `ConsumerTable` implement an ordered operation stream. The
 producer sends operations; the consumer pops and applies them in order.
@@ -297,7 +311,7 @@ consumer must see `SET A`, then `DEL A`, then `SET A` as three separate events.
 Do not use it when the final state per key is enough. In that case,
 `ProducerStateTable` is usually simpler and cheaper.
 
-### 4. ProducerStateTable / ConsumerStateTable
+### ProducerStateTable And ConsumerStateTable
 
 `ProducerStateTable` and `ConsumerStateTable` implement latest desired state.
 The producer writes pending state; the consumer owns materialization or applying
@@ -360,7 +374,7 @@ This is why `ProducerStateTable` fits `CONFIG_DB -> app -> APPL_DB` desired
 state publication: the consumer usually wants the latest desired APPL_DB state,
 not every intermediate config edit.
 
-## Selection Summary
+## API Selection And Ownership
 
 ```text
 Need direct hash read/write:
@@ -392,7 +406,7 @@ APPL_DB table owner:
   ConsumerStateTable
 ```
 
-## Atomicity And Locks
+### Atomicity And Locks
 
 The producer/consumer table APIs use Redis Lua internally for the multi-command
 Redis operations they own. This prevents partial queue/state updates and lost
@@ -428,7 +442,7 @@ same design. Prefer these before adding a broad lock:
 Add an explicit Redis lock only when there is a real shared resource and every
 writer/reader that matters will obey the lock.
 
-## Ownership Pattern
+### Ownership Pattern
 
 A clean split is:
 
@@ -448,31 +462,213 @@ CONFIG_DB: same table/key range -> multiple apps -> same APPL_DB table
 
 unless there is a clear owner, allocator, version check, or explicit lock.
 
-## Minimal Project Flow
+## Example Flows
+
+### custom_tables
+
+The `custom_tables` example is the minimal `CONFIG_DB -> APPL_DB` flow. It is
+useful when the goal is to understand custom table naming, config observation,
+and APPL_DB pending state without adding an APPL table owner.
+
+`custom_tables` demonstrates a minimal `CONFIG_DB -> APPL_DB` desired-state
+flow:
+
+```text
+config_db_producer.py
+  -> CONFIG_DB CUSTOM_CONFIG_TABLE|demo
+  -> config_to_appl_bridge.py
+  -> APPL_DB pending _CUSTOM_APPL_TABLE:demo
+```
+
+The bridge uses `ProducerStateTable`, so it writes pending APPL state and the
+key set. This example intentionally has no APPL table owner, so the final
+`CUSTOM_APPL_TABLE:demo` hash is not materialized.
+
+The implementation keeps the naming contract local to this repository:
+
+- `src/custom_tables/example_schema.py` defines Python table constants.
+- `src/custom_tables/example_schema.h` mirrors those constants for C/C++.
+- `src/custom_tables/config_db_producer.py` writes config with `Table`.
+- `src/custom_tables/config_to_appl_bridge.py` watches config with
+  `SubscriberStateTable` and publishes APPL pending state with
+  `ProducerStateTable`.
+
+### vlan_table
+
+The `vlan_table` example adds the missing consumers so the reader can see the
+same table APIs across the full `CONFIG_DB -> APPL_DB -> ASIC_DB` chain.
+
+`vlan_table` models the full SONiC-style chain:
+
+```text
+config vlan add 100
+  -> CONFIG_DB VLAN|Vlan100
+  -> vlanmgrd
+  -> APPL_DB pending _VLAN_TABLE:Vlan100
+  -> VlanOrch
+  -> ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
+  -> syncd
+  -> ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
+```
+
+The implementation maps each SONiC component role to a small Python script:
+
+- `src/vlan_table/config_vlan_command.py` emulates `config vlan add/del`.
+- `src/vlan_table/vlanmgrd.py` bridges `CONFIG_DB VLAN` to APPL pending state.
+- `src/vlan_table/vlanorch.py` consumes APPL pending state and queues ASIC
+  operations.
+- `src/vlan_table/syncd.py` consumes ASIC operations and logs a fake ASIC
+  write.
+
+## Running The Examples
+
+### Test Environment
+
+The local environment uses:
+
+- `database`: Redis with `/var/run/redis/redis.sock`.
+- `runner`: a container that builds and installs local `sonic-swss-common`.
+- `swss-common-install`: a named volume for compiled output under
+  `/usr/local`.
+
+Initial setup:
+
+```bash
+cd /home/ubuntu/swss-common-example
+sudo mkdir -p /var/run/redis
+docker compose build runner
+docker compose up -d database
+```
+
+### Method 1: Pure Bash Commands
 
 Run bridge:
 
 ```bash
-docker compose run --rm runner
+cd /home/ubuntu/swss-common-example
+docker compose up -d database
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/custom_tables/config_to_appl_bridge.py --key demo --watch
 ```
 
-Write config:
+In another terminal, write config:
 
 ```bash
-docker compose run --rm \
-  --entrypoint python3 \
-  runner \
-  config_db_producer.py \
-  --key demo \
-  --enabled true \
-  --interval 10 \
-  --db-config /tmp/database_config.json
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
-Inspect Redis:
+For the VLAN flow, start `syncd`, `vlanorch`, and `vlanmgrd` in separate
+terminals, then run the config command:
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/syncd.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/vlanorch.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
+  src/vlan_table/config_vlan_command.py add 100
+```
+
+### Method 2: Helper Scripts
+
+Prefer helper scripts for long-running watch commands. They start `database`,
+export `UID`/`GID`, pass extra arguments through, and remove their runner
+container on `Ctrl-C`.
+
+Custom table flow:
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_custom_tables_example.sh bridge --key demo --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_custom_tables_example.sh producer --key demo --enabled true --interval 10
+```
+
+VLAN flow:
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh orch --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+```
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh config-add 100
+```
+
+Full VLAN verification:
+
+```bash
+cd /home/ubuntu/swss-common-example
+scripts/run_vlan_table_example.sh verify 100
+```
+
+## Verification
+
+Custom table checks:
 
 ```bash
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'CUSTOM_CONFIG_TABLE|demo'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_CUSTOM_APPL_TABLE:demo'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'CUSTOM_APPL_TABLE_KEY_SET'
+```
+
+VLAN checks:
+
+```bash
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 4 HGETALL 'VLAN|Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL '_VLAN_TABLE:Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_TABLE_KEY_SET'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+```
+
+## Appendix: Final Table Materialization
+
+`Table` writes final hashes directly. `ProducerStateTable` and `ProducerTable`
+do not. Their matching consumers materialize final hashes:
+
+```text
+ProducerStateTable.set:
+  writes _<TABLE>:<key> and <TABLE>_KEY_SET
+
+ConsumerStateTable.pop:
+  materializes <TABLE>:<key>
+
+ProducerTable.set:
+  writes <TABLE>_KEY_VALUE_OP_QUEUE
+
+ConsumerTable.pop:
+  materializes <TABLE>:<key>
 ```
