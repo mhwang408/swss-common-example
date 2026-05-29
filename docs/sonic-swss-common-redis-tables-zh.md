@@ -7,6 +7,10 @@ Redis-backed SONiC DB tables。
 `custom_tables` 與 `vlan_table` 範例。本文範圍限於本機教學專案；不涵蓋完整
 SONiC schema upstream、CLI 整合或真實 ASIC programming。
 
+如果要看 CONFIG_DB、APPL_DB、ASIC_DB、STATE_DB、FLEX_COUNTER_DB、
+COUNTERS_DB 之間更完整的 producer/consumer table split，請看
+[sonic-swss-common-table-usage-in-SONiC.md](sonic-swss-common-table-usage-in-SONiC.md)。
+
 ## 系統模型
 
 `sonic-swss-common` 是 SONiC 用來讀寫 Redis-backed SONiC DB 的 shared client
@@ -444,6 +448,26 @@ CONFIG_DB: same table/key range -> multiple apps -> same APPL_DB table
 ```
 
 除非有明確 owner、allocator、version check 或 explicit lock。
+
+## Route Flow Counter Table Split
+
+route flow counter 同時用到多個 DB，因此很適合用來避免把所有流程都誤解成
+`ProducerTable` / `ConsumerTable`。config 是 direct `CONFIG_DB` hash；
+route pattern 是 CONFIG_DB subscription；traditional polling setup 使用
+`FLEX_COUNTER_DB`；CLI/display 資料則從 `COUNTERS_DB` 讀取。
+
+| Flow | Producer / Table | DB / Table | Consumer / Table |
+| --- | --- | --- | --- |
+| Enable route flow counter | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE|FLOW_CNT_ROUTE` | `FlexCounterOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE|<vrf>|<prefix>` | `FlowCounterRouteOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Polling setup, traditional mode | `FlowCounterRouteOrch` via `FlexCounterManager` / `ProducerTable` | `FLEX_COUNTER_DB:FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` field `FLOW_COUNTER_ID_LIST` | `syncd` flex counter logic |
+| Route-to-counter mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP` | CLI/display / `Table` or direct Redis hash read |
+| Route-to-pattern mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` or direct Redis hash read |
+| Polled counter stats | `syncd` flex counter polling / `Table`-style hash write | `COUNTERS_DB:COUNTERS:<counter_oid>` | CLI/display / `Table` or direct Redis hash read |
+
+non-traditional flex counter mode 中，`FlexCounterManager` 可以透過 sairedis
+switch attributes，例如 `SAI_REDIS_SWITCH_ATTR_FLEX_COUNTER`，設定 syncd。
+這條路徑不是直接用 swsscommon `ProducerTable` 寫 `FLEX_COUNTER_DB`。
 
 ## Example Flows
 

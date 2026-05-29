@@ -9,6 +9,10 @@ Redis table 名稱本身，而是每一段 component 為什麼選不同的
 用本 repo 的 `vlan_table` 範例驗證每個 materialization point。本文範圍限於教學版
 control-plane flow；不涵蓋真實 orchagent、syncd 或 ASIC SDK 行為。
 
+如果要看更完整的 SONiC DB producer/consumer table 類型整理，包括 SAI
+request/response、async notification、route flow counter 與 COUNTERS_DB，請看
+[sonic-swss-common-table-usage-in-SONiC.md](sonic-swss-common-table-usage-in-SONiC.md)。
+
 ## 系統模型
 
 `sonic-swss-common` 是 SONiC control-plane components 讀寫 Redis-backed
@@ -791,6 +795,31 @@ scripts/run_vlan_table_example.sh config-add 100
 cd /home/ubuntu/swss-common-example
 scripts/run_vlan_table_example.sh config-del 100
 ```
+
+## Route Flow Counter Table Split
+
+VLAN flow 是 `CONFIG_DB -> APPL_DB -> ASIC_DB` 的設定同步範例；route flow
+counter 則展示 counter 類功能常見的另一種資料流。重點是：
+
+- `CONFIG_DB` 還是 CLI/config tooling 直接用 `Table` 寫入。
+- orchagent 內的 CONFIG_DB consumer 是 `Consumer` wrapper，底層是
+  `SubscriberStateTable`。
+- traditional flex counter setup 用 `ProducerTable` 寫 `FLEX_COUNTER_DB`。
+- `COUNTERS_DB` mapping 與 stats 是 direct hash/state，通常用 `Table` 或
+  direct Redis hash read/write，不是 `ConsumerTable.pop()` pipeline。
+
+| Flow | Producer / Table | DB / Table | Consumer / Table |
+| --- | --- | --- | --- |
+| Enable route flow counter | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE|FLOW_CNT_ROUTE` | `FlexCounterOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE|<vrf>|<prefix>` | `FlowCounterRouteOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Polling setup, traditional mode | `FlowCounterRouteOrch` via `FlexCounterManager` / `ProducerTable` | `FLEX_COUNTER_DB:FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` field `FLOW_COUNTER_ID_LIST` | `syncd` flex counter logic |
+| Route-to-counter mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP` | CLI/display / `Table` or direct Redis hash read |
+| Route-to-pattern mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` or direct Redis hash read |
+| Polled counter stats | `syncd` flex counter polling / `Table`-style hash write | `COUNTERS_DB:COUNTERS:<counter_oid>` | CLI/display / `Table` or direct Redis hash read |
+
+non-traditional flex counter mode 可能透過 sairedis extension attribute，例如
+`SAI_REDIS_SWITCH_ATTR_FLEX_COUNTER`，設定 syncd。這種模式不是直接用
+`ProducerTable` produce `FLEX_COUNTER_DB` table。
 
 ## Verification
 

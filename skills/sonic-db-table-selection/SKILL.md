@@ -49,6 +49,26 @@ Use `ProducerTable` / `ConsumerTable` for ordered operation streams:
 - Operation ordering matters.
 - Do not use it when latest state per key is sufficient.
 
+Use `Table` for `COUNTERS_DB` maps and statistics reads/writes:
+
+- Counter name/OID maps are direct hash state, not event queues.
+- CLI/display tools usually read these hashes with `Table` or direct Redis
+  access.
+- Example: route flow counters use `COUNTERS_ROUTE_NAME_MAP` and
+  `COUNTERS_ROUTE_TO_PATTERN_MAP` as direct `COUNTERS_DB` tables.
+
+Use `ProducerTable` for traditional `FLEX_COUNTER_DB` polling setup:
+
+- Example: route flow counters register
+  `FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` with field
+  `FLOW_COUNTER_ID_LIST`.
+- The producer is `FlowCounterRouteOrch` via `FlexCounterManager`.
+- The consumer is syncd flex counter logic, not a normal orch
+  `ConsumerTable` loop.
+- In non-traditional flex counter mode, FlexCounterManager can use sairedis
+  switch attributes such as `SAI_REDIS_SWITCH_ATTR_FLEX_COUNTER` instead of
+  directly producing `FLEX_COUNTER_DB` rows.
+
 ## Common SONiC Flow
 
 For a simple custom pipeline:
@@ -64,6 +84,26 @@ CONFIG_DB writer: Table
 CONFIG_DB app reader: SubscriberStateTable
 APPL_DB app writer: ProducerStateTable
 APPL_DB downstream reader: ConsumerStateTable
+```
+
+For route flow counters:
+
+```text
+CONFIG_DB FLEX_COUNTER_TABLE|FLOW_CNT_ROUTE:
+  producer = CLI / Table
+  consumer = FlexCounterOrch / orch Consumer backed by SubscriberStateTable
+
+CONFIG_DB FLOW_COUNTER_ROUTE_PATTERN_TABLE|<vrf>|<prefix>:
+  producer = CLI / Table
+  consumer = FlowCounterRouteOrch / orch Consumer backed by SubscriberStateTable
+
+FLEX_COUNTER_DB FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>:
+  producer = FlowCounterRouteOrch via FlexCounterManager / ProducerTable
+  consumer = syncd flex counter logic
+
+COUNTERS_DB COUNTERS_ROUTE_NAME_MAP and COUNTERS_ROUTE_TO_PATTERN_MAP:
+  producer = FlowCounterRouteOrch / Table
+  consumer = CLI/display / Table or direct Redis hash read
 ```
 
 Keep ownership boundaries explicit:

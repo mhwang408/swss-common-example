@@ -10,7 +10,9 @@ It contains two examples:
   `vlanmgrd`, `PortsOrch`, `syncd`, plus the ASIC notification path back
   through `PortsOrch` into `STATE_DB`.
 
-Detailed table/API notes are in
+The consolidated SONiC table-usage reference is
+[docs/sonic-swss-common-table-usage-in-SONiC.md](docs/sonic-swss-common-table-usage-in-SONiC.md).
+Detailed local table/API notes are in
 [docs/sonic-swss-common-redis-tables.md](docs/sonic-swss-common-redis-tables.md).
 Chinese notes are available in
 [docs/sonic-swss-common-redis-tables-zh.md](docs/sonic-swss-common-redis-tables-zh.md)
@@ -69,6 +71,26 @@ that do not need SONiC table semantics.
 
 The common mistake is assuming every producer writes final table content. That
 is true for `Table`, but not for `ProducerStateTable` or `ProducerTable`.
+
+### Route Flow Counter Table Split
+
+Route flow counters are a useful counterexample to the simple
+`orch -> ASIC_DB -> syncd` request path. Configuration enters through
+`CONFIG_DB`, polling setup may use `FLEX_COUNTER_DB`, and display data is read
+from `COUNTERS_DB`.
+
+| Flow | Producer / Table | DB / Table | Consumer / Table |
+| --- | --- | --- | --- |
+| Enable route flow counter | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE|FLOW_CNT_ROUTE` | `FlexCounterOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE|<vrf>|<prefix>` | `FlowCounterRouteOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Polling setup, traditional mode | `FlowCounterRouteOrch` via `FlexCounterManager` / `ProducerTable` | `FLEX_COUNTER_DB:FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` field `FLOW_COUNTER_ID_LIST` | `syncd` flex counter logic |
+| Route-to-counter mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP` | CLI/display / `Table` or direct Redis hash read |
+| Route-to-pattern mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` or direct Redis hash read |
+| Polled counter stats | `syncd` flex counter polling / `Table`-style hash write | `COUNTERS_DB:COUNTERS:<counter_oid>` | CLI/display / `Table` or direct Redis hash read |
+
+In non-traditional flex counter mode, `FlexCounterManager` can configure syncd
+through sairedis switch attributes such as `SAI_REDIS_SWITCH_ATTR_FLEX_COUNTER`
+instead of directly producing `FLEX_COUNTER_DB` rows.
 
 ## 2. Examples
 
