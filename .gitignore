@@ -1,3 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Avoid accidentally staging Windows absolute-path temp artifacts.
+/[A-Za-z]:*

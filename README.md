@@ -247,8 +247,8 @@ Initial setup:
 ```bash
 cd /home/ubuntu/swss-common-example
 sudo mkdir -p /var/run/redis
-docker compose build runner
-docker compose up -d database
+UID=$(id -u) GID=$(id -g) docker compose build runner
+UID=$(id -u) GID=$(id -g) docker compose up -d database
 ```
 
 The `runner` service runs as `${UID}:${GID}`. The helper scripts export these
@@ -276,7 +276,7 @@ docker volume rm swss-common-example_swss-common-install
 To rebuild the runner image itself:
 
 ```bash
-docker compose build --no-cache runner
+UID=$(id -u) GID=$(id -g) docker compose build --no-cache runner
 ```
 
 ### Method 1: Pure Bash Commands
@@ -288,7 +288,7 @@ Custom table flow:
 
 ```bash
 cd /home/ubuntu/swss-common-example
-docker compose up -d database
+UID=$(id -u) GID=$(id -g) docker compose up -d database
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
   src/custom_tables/config_to_appl_bridge.py --key demo --watch
 ```
@@ -428,6 +428,7 @@ docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 SMEMBERS 'VLAN_
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 0 HGETALL 'VLAN_TABLE:Vlan100'
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 LRANGE 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE' 0 -1
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100'
+docker exec database redis-cli -s /var/run/redis/redis.sock -n 6 HGETALL 'PORT_TABLE|Ethernet0'
 ```
 
 `scripts/verify_vlan_flow.sh 100` clears DB 0, DB 1, DB 4, and DB 6, runs the
