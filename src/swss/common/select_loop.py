@@ -1,11 +1,12 @@
 """Small object-oriented wrapper around swsscommon.Select."""
 
+from common.swss import swsscommon
+
 
 class SelectLoop:
     STOP = object()
 
-    def __init__(self, swsscommon):
-        self._swsscommon = swsscommon
+    def __init__(self):
         self._selector = swsscommon.Select()
         self._handlers = {}
 
@@ -17,7 +18,7 @@ class SelectLoop:
 
     def dispatch_once(self):
         state, selectable = self._selector.select()
-        if state != self._swsscommon.Select.OBJECT:
+        if state != swsscommon.Select.OBJECT:
             return None
 
         handler = self._handlers.get(selectable.getFd())

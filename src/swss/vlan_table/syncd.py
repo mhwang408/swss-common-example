@@ -68,7 +68,7 @@ def main():
 
     asic_consumer = swsscommon.ConsumerTable(asic_db, ASIC_VLAN_TABLE_NAME)
     response_producer = swsscommon.ProducerTable(asic_db, ASIC_GET_RESPONSE_TABLE_NAME)
-    select_loop = SelectLoop(swsscommon)
+    select_loop = SelectLoop()
 
     print("syncd: waiting for ASIC_DB %s:%s updates" % (ASIC_VLAN_TABLE_NAME, key_filter))
 

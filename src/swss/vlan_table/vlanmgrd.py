@@ -69,7 +69,7 @@ def wait_for_appl_response(args):
     key_filter = "%s%s" % (VLAN_PREFIX, args.vlan_id)
     appl_state_db = swsscommon.DBConnector("APPL_STATE_DB", 0, False)
     response_consumer = swsscommon.NotificationConsumer(appl_state_db, APPL_RESPONSE_CHANNEL_NAME)
-    select_loop = SelectLoop(swsscommon)
+    select_loop = SelectLoop()
 
     print("vlanmgrd: waiting for APPL_STATE_DB response channel %s:%s" % (
         APPL_RESPONSE_CHANNEL_NAME,
@@ -116,7 +116,7 @@ def watch_state_port(args):
         return
 
     state_subscriber = swsscommon.SubscriberStateTable(state_db, STATE_PORT_TABLE_NAME)
-    select_loop = SelectLoop(swsscommon)
+    select_loop = SelectLoop()
 
     def handle_state_update(_selectable):
         key, op, field_values = state_subscriber.pop()
@@ -147,7 +147,7 @@ def replay_config(config_db, appl_db, appl_table, key_filter):
 
 def watch_config_updates(args, config_db, appl_db, appl_table, key_filter):
     config_subscriber = swsscommon.SubscriberStateTable(config_db, CFG_VLAN_TABLE_NAME)
-    select_loop = SelectLoop(swsscommon)
+    select_loop = SelectLoop()
 
     def handle_config_update(_selectable):
         key, op, field_values = config_subscriber.pop()

@@ -77,7 +77,7 @@ def main():
     appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
     config_subscriber = swsscommon.SubscriberStateTable(config_db, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME)
     appl_table = swsscommon.ProducerStateTable(appl_db, EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME)
-    select_loop = SelectLoop(swsscommon)
+    select_loop = SelectLoop()
 
     print("Waiting for CONFIG_DB %s|%s updates" % (EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, args.key))
 

@@ -70,7 +70,7 @@ class PortsOrchDemo:
             APPL_RESPONSE_CHANNEL_NAME,
         )
         self.response_consumer = None
-        select_loop = SelectLoop(swsscommon)
+        select_loop = SelectLoop()
 
         if self.args.wait_sai_response:
             self.response_consumer = swsscommon.ConsumerTable(
@@ -250,7 +250,7 @@ class PortsOrchDemo:
             ASIC_NOTIFICATIONS_CHANNEL_NAME,
         )
         self.port_state_table = swsscommon.Table(self.state_db, STATE_PORT_TABLE_NAME)
-        select_loop = SelectLoop(swsscommon)
+        select_loop = SelectLoop()
 
         print("PortsOrch: waiting for ASIC_DB:%s async notifications" % (
             ASIC_NOTIFICATIONS_CHANNEL_NAME,
