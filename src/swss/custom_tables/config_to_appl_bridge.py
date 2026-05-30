@@ -1,30 +1,40 @@
 #!/usr/bin/env python3
-#
-# Minimal event-driven consumer of the custom CONFIG_DB table and producer of a
-# custom APPL_DB table.
-#
-# Example Redis keys:
-#   DB 4: CUSTOM_CONFIG_TABLE|demo
-#   DB 0: CUSTOM_APPL_TABLE:demo
+"""Bridge custom CONFIG_DB table changes into APPL_DB.
+
+Subscribes to CONFIG_DB ``CUSTOM_CONFIG_TABLE`` via ``SubscriberStateTable``
+and publishes desired state into APPL_DB ``CUSTOM_APPL_TABLE`` via
+``ProducerStateTable``::
+
+    CONFIG_DB CUSTOM_CONFIG_TABLE|demo
+        → [bridge SubscriberStateTable.pop]
+        → APPL_DB _CUSTOM_APPL_TABLE:demo (pending, via ProducerStateTable.set)
+"""
+
+from __future__ import annotations
 
 import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _path_setup  # noqa: F401
 
-from common.custom_schema import (
+from common.schema import (
+    APPL_DB,
+    CONFIG_DB,
     EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME,
     EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
+    OP_DEL,
+    OP_SET,
 )
 from common.select_loop import SelectLoop
-from common.swss import field_value_pairs
-from common.swss import load_db_config
-from common.swss import swsscommon
+from common.swss import field_value_pairs, load_db_config, swsscommon
 
 
-def publish_set(appl_table, key, field_values):
+def publish_set(appl_table: Any, key: str, field_values: list[tuple[str, str]]) -> None:
+    """Transform CONFIG_DB fields and publish a SET to APPL_DB."""
     config = {field: value for field, value in field_values}
     appl_values = {
         "admin_status": "up" if config.get("enabled", "false").lower() == "true" else "down",
@@ -35,63 +45,65 @@ def publish_set(appl_table, key, field_values):
     }
     appl_table.set(key, field_value_pairs(appl_values))
 
-    print("Received CONFIG_DB %s|%s SET and published APPL_DB %s:%s SET" % (
-        EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
-        key,
-        EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME,
-        key,
+    print("Received %s %s|%s SET -> %s %s:%s SET" % (
+        CONFIG_DB, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, key,
+        APPL_DB, EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME, key,
     ))
     for field, value in appl_values.items():
         print("  %s=%s" % (field, value))
 
 
-def publish_delete(appl_table, key):
+def publish_delete(appl_table: Any, key: str) -> None:
+    """Publish a DEL to APPL_DB for the given key."""
     appl_table.delete(key)
-    print("Received CONFIG_DB %s|%s DEL and published APPL_DB %s:%s DEL" % (
-        EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
-        key,
-        EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME,
-        key,
+    print("Received %s %s|%s DEL -> %s %s:%s DEL" % (
+        CONFIG_DB, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, key,
+        APPL_DB, EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME, key,
     ))
 
 
-def main():
+def main() -> None:
+    """Subscribe to CONFIG_DB changes and bridge them to APPL_DB."""
     parser = argparse.ArgumentParser(
         description="Subscribe to a custom CONFIG_DB table and publish APPL_DB updates."
     )
     parser.add_argument("--key", default="demo", help="table entry key")
     parser.add_argument(
-        "--watch",
-        action="store_true",
-        help="continue processing CONFIG_DB updates instead of exiting after one matching event",
+        "--watch", action="store_true",
+        help="continue processing instead of exiting after one event",
     )
-    parser.add_argument(
-        "--db-config",
-        help="path to database_config.json; useful when running Redis in a local host container",
-    )
+    parser.add_argument("--db-config", help="path to database_config.json")
     args = parser.parse_args()
 
     load_db_config(args.db_config)
 
-    config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
-    appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
-    config_subscriber = swsscommon.SubscriberStateTable(config_db, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME)
-    appl_table = swsscommon.ProducerStateTable(appl_db, EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME)
+    config_db = swsscommon.DBConnector(CONFIG_DB, 0, False)
+    appl_db = swsscommon.DBConnector(APPL_DB, 0, False)
+    config_subscriber = swsscommon.SubscriberStateTable(
+        config_db, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
+    )
+    appl_table = swsscommon.ProducerStateTable(
+        appl_db, EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME,
+    )
     select_loop = SelectLoop()
 
-    print("Waiting for CONFIG_DB %s|%s updates" % (EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, args.key))
+    print("Waiting for %s %s|%s updates" % (
+        CONFIG_DB, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, args.key,
+    ))
 
-    def handle_config_update(_selectable):
+    def handle_config_update(_selectable: Any) -> object | None:
         key, op, field_values = config_subscriber.pop()
         if key != args.key:
             return None
 
-        if op == "SET":
+        if op == OP_SET:
             publish_set(appl_table, key, field_values)
-        elif op == "DEL":
+        elif op == OP_DEL:
             publish_delete(appl_table, key)
         else:
-            print("Ignoring CONFIG_DB %s|%s op %s" % (EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, key, op))
+            print("Ignoring %s %s|%s op %s" % (
+                CONFIG_DB, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, key, op,
+            ))
 
         if not args.watch:
             return SelectLoop.STOP

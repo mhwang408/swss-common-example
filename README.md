@@ -136,12 +136,13 @@ materialize the final `CUSTOM_APPL_TABLE:demo` hash.
 
 Files:
 
-- `src/swss/common/custom_schema.py`: Python table-name constants shared by all examples.
+- `src/swss/common/schema.py`: Python table-name and operation constants shared by all examples.
 - `src/swss/custom_tables/example_schema.h`: C/C++ table-name constants.
 - `src/swss/custom_tables/config_db_producer.py`: writes `CONFIG_DB` with `Table`.
 - `src/swss/custom_tables/config_to_appl_bridge.py`: watches `CONFIG_DB` with
   `SubscriberStateTable` and publishes `APPL_DB` with `ProducerStateTable`.
 - `src/swss/common/select_loop.py`: small fd-to-handler wrapper around `swsscommon.Select`.
+- `src/swss/_path_setup.py`: shared bootstrap that adds swsscommon to `sys.path`.
 
 Key APIs:
 
@@ -196,31 +197,36 @@ The example has four components:
 | --- | --- |
 | `config_vlan_command.py` | Emulates `config vlan add 100` and `config vlan del 100`. |
 | `vlanmgrd.py` | Reads/watches `CONFIG_DB VLAN`, publishes APPL desired state, consumes APPL response notifications, and can observe `STATE_DB PORT_TABLE`. |
-| `portorch.py` | Models the real `PortsOrch`: consumes APPL VLAN desired state, enqueues ASIC operations, reads sairedis GETRESPONSE entries, publishes APPL responses, and handles async ASIC notifications. |
+| `portorch.py` | Models the real `PortsOrch`: consumes APPL VLAN desired state, enqueues ASIC operations, reads sairedis GETRESPONSE entries, and publishes APPL responses. |
+| `notification_orch.py` | Handles async ASIC notifications and writes `STATE_DB PORT_TABLE`. |
 | `syncd.py` | Consumes ASIC operations, sends a fake sairedis GETRESPONSE entry, and can emit async ASIC notifications. |
 
 #### Coding Details
 
 Files:
 
-- `src/swss/common/custom_schema.py`: table constants and fake ASIC OID helper.
+- `src/swss/common/schema.py`: table constants, DB name constants, operation constants,
+  and fake ASIC OID helper.
 - `src/swss/vlan_table/config_vlan_command.py`: `Table.set/delete` in `CONFIG_DB`.
 - `src/swss/vlan_table/vlanmgrd.py`: `Table.get`, `SubscriberStateTable.pop`, and
   `ProducerStateTable.set/delete`.
-- `src/swss/vlan_table/portorch.py`: `ConsumerStateTable.pop` and
+- `src/swss/vlan_table/portorch.py`: `VlanFlowOrch` class — `ConsumerStateTable.pop` and
   `ProducerTable.set/delete`, plus `ConsumerTable` for ASIC GETRESPONSE
-  and async notification channels, and `NotificationProducer` for APPL response.
+  and `NotificationProducer` for APPL response.
+- `src/swss/vlan_table/notification_orch.py`: `NotificationFlowOrch` class — consumes
+  async `ASIC_DB:NOTIFICATIONS` and writes `STATE_DB PORT_TABLE`.
 - `src/swss/vlan_table/syncd.py`: `ConsumerTable.pop`, `NotificationProducer` for
   async notifications, and `ProducerTable` for sairedis GETRESPONSE.
 - `src/swss/common/db_logging.py`: Redis verification markers and a
   `marked_redis_operation` context manager for grouping Redis `MONITOR` output
   around each table API call.
 - `src/swss/common/select_loop.py`: common `Select` loop dispatch by selectable fd.
+- `src/swss/_path_setup.py`: shared bootstrap that adds swsscommon to `sys.path`.
 
 `portorch.py` is the only VLAN example script organized as a small class. It has
 the most shared state: APPL consumer, ASIC producer, GETRESPONSE consumer, APPL
 response producer, async notification consumer, and in-flight VLAN requests.
-`PortsOrchDemo` keeps those resources together while separating the flows into
+`VlanFlowOrch` keeps those resources together while separating the flows into
 `handle_vlan_update`, `handle_sai_response`, and `handle_notification`.
 
 The VLAN request/response path uses a small state object:
@@ -229,8 +235,9 @@ The VLAN request/response path uses a small state object:
 APPL_RECEIVED -> ASIC_SENT -> ASIC_RESPONDED -> APPL_RESPONDED
 ```
 
-The async `ASIC_DB:NOTIFICATIONS -> STATE_DB` path remains a plain event handler
-because it is an independent notification, not a request lifecycle.
+The async `ASIC_DB:NOTIFICATIONS -> STATE_DB` path lives in a separate class
+(`NotificationFlowOrch` in `notification_orch.py`) because it is an independent
+notification flow, not part of the VLAN request lifecycle.
 
 Component/API mapping:
 
@@ -245,8 +252,8 @@ Component/API mapping:
 | `portorch.py` | `ProducerTable.set/delete` | Enqueues ordered ASIC operations. |
 | `portorch.py` | `NotificationProducer.send` | Propagates ASIC result to `APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL`. |
 | `portorch.py` | `ConsumerTable.pop` | Reads syncd `ASIC_DB GETRESPONSE` entries. |
-| `portorch.py` | `NotificationConsumer.pop` | Reads async `ASIC_DB:NOTIFICATIONS`. |
-| `portorch.py` | `Table.set` | Converts async port notifications into `STATE_DB PORT_TABLE|Ethernet0`. |
+| `notification_orch.py` | `NotificationConsumer.pop` | Reads async `ASIC_DB:NOTIFICATIONS`. |
+| `notification_orch.py` | `Table.set` | Converts async port notifications into `STATE_DB PORT_TABLE|Ethernet0`. |
 | `syncd.py` | `ConsumerTable.pop` | Materializes/deletes final `ASIC_DB` table content. |
 | `syncd.py` | `NotificationProducer.send` | Sends SAI operation responses and async port notifications. |
 
@@ -492,7 +499,7 @@ APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL on APPL_STATE_DB:
   sent by portorch.py NotificationProducer and read by vlanmgrd.py NotificationConsumer
 
 STATE_DB PORT_TABLE|Ethernet0:
-  written by portorch.py after consuming syncd's ASIC_DB:NOTIFICATIONS event
+  written by notification_orch.py after consuming syncd's ASIC_DB:NOTIFICATIONS event
 ```
 
 ## 5. Appendix: Who Materializes The Final Table?

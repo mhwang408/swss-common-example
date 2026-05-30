@@ -79,23 +79,21 @@ printf '  monitor log: %s\n' "$monitor_log"
 show_cmd "1. config command writes CONFIG_DB"
 run_runner src/swss/vlan_table/config_vlan_command.py add "$vlan_id"
 show_redis "CONFIG_DB final VLAN|${vlan_key}" -n 4 HGETALL "VLAN|${vlan_key}"
-show_redis "APPL_DB final before vlanmgrd, should be empty" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
+show_redis "APPL_DB final before consumers start, should be empty" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
 
-show_cmd "2. vlanmgrd reads CONFIG_DB and writes APPL_DB pending state"
-run_runner src/swss/vlan_table/vlanmgrd.py --vlan-id "$vlan_id"
-show_redis "APPL_DB final after vlanmgrd, should still be empty" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
-show_redis "APPL_DB pending hash after vlanmgrd" -n 0 HGETALL "_VLAN_TABLE:${vlan_key}"
-show_redis "APPL_DB pending key set after vlanmgrd" -n 0 SMEMBERS "VLAN_TABLE_KEY_SET"
-
-show_cmd "3. Start syncd and vlanmgrd response listener, then portorch consumes APPL_DB"
+show_cmd "2. Start consumers (syncd, portorch, vlanmgrd response listener) then trigger vlanmgrd"
 syncd_name="swss-common-example-verify-syncd-$$"
 run_runner_bg "$syncd_name" src/swss/vlan_table/syncd.py --vlan-id "$vlan_id"
+portorch_name="swss-common-example-verify-portorch-$$"
+run_runner_bg "$portorch_name" src/swss/vlan_table/portorch.py --vlan-id "$vlan_id" --wait-sai-response
 vlanmgrd_response_name="swss-common-example-verify-vlanmgrd-response-$$"
 run_runner_bg "$vlanmgrd_response_name" src/swss/vlan_table/vlanmgrd.py --vlan-id "$vlan_id" --wait-appl-response --watch
-sleep 0.5
-run_runner src/swss/vlan_table/portorch.py --vlan-id "$vlan_id" --wait-sai-response
-sleep 0.5
-show_redis "APPL_DB final after portorch" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
+sleep 1
+
+show_cmd "3. vlanmgrd reads CONFIG_DB and publishes APPL_DB (triggers portorch -> syncd chain)"
+run_runner src/swss/vlan_table/vlanmgrd.py --vlan-id "$vlan_id"
+sleep 1
+show_redis "APPL_DB final after portorch consumed" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
 show_redis "APPL_DB pending key set after portorch, should be empty" -n 0 SMEMBERS "VLAN_TABLE_KEY_SET"
 show_redis "ASIC_DB final after syncd" -n 1 HGETALL "ASIC_STATE:SAI_OBJECT_TYPE_VLAN:${asic_key}"
 show_redis "ASIC_DB queue after syncd, should be empty" -n 1 LRANGE "ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE" 0 -1
