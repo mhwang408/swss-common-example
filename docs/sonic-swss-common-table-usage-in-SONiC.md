@@ -125,20 +125,6 @@ In SONiC, orchagent loads the sairedis SAI implementation. That implementation
 is a Redis-backed SAI proxy. It serializes the SAI operation into ASIC_DB so
 `syncd` can invoke the real vendor SAI implementation.
 
-Use this wording:
-
-```text
-sairedis is a Redis-backed SAI implementation/proxy.
-```
-
-Avoid this wording:
-
-```text
-sairedis is the vendor SDK.
-sairedis is just a generic remote-call layer.
-vendor SAI serializes Redis responses.
-```
-
 The request/response path is:
 
 ```text
@@ -153,7 +139,7 @@ orchagent / PortsOrch
 | Flow | Producer / Table | DB / Table / Channel | Consumer / Table |
 | --- | --- | --- | --- |
 | SAI object request | orchagent through sairedis / `ProducerTable`-style ASIC_DB operation | `ASIC_DB:ASIC_STATE:SAI_OBJECT_TYPE_*` | syncd / `ConsumerTable` |
-| SAI sync response | syncd / `NotificationProducer` | ASIC DB response channel, for example `<table>_RESPONSE_CHANNEL` | sairedis client side / `NotificationConsumer` |
+| SAI sync response | syncd / `ProducerTable` | `ASIC_DB:GETRESPONSE` (key = SAI status, op = `getresponse`) | sairedis client side / `ConsumerTable` |
 
 The vendor SAI shared library does not serialize the Redis response. The split
 is:
@@ -162,7 +148,7 @@ is:
 syncd calls vendor libsai
   -> vendor libsai returns sai_status_t and output data
   -> syncd/sairedis serialization code formats the Redis response
-  -> NotificationProducer sends it on the ASIC DB response channel
+  -> ProducerTable(ASIC_DB, "GETRESPONSE").set(SAI_STATUS_*, ..., "getresponse")
 ```
 
 `ASIC_DB:ASIC_STATE:*` is therefore both the SAI request transport and the Redis
@@ -193,11 +179,11 @@ orchagent handles `ASIC_DB:NOTIFICATIONS` with
 
 Do not confuse these channels:
 
-| Channel | Purpose |
+| Channel / Table | Purpose |
 | --- | --- |
-| ASIC DB response channel | Response for a SAI request initiated by orchagent through sairedis. |
-| `ASIC_DB:NOTIFICATIONS` | Unsolicited async SAI/vendor event from syncd to orchagent. |
-| `APPL_DB_<table>_RESPONSE_CHANNEL` | Northbound orch response after APPL_DB intent processing. |
+| `ASIC_DB:GETRESPONSE` | SAI request response from syncd to sairedis client (`ProducerTable` / `ConsumerTable`). |
+| `ASIC_DB:NOTIFICATIONS` | Unsolicited async SAI/vendor event from syncd to orchagent (`NotificationProducer` / `NotificationConsumer`). |
+| `APPL_DB_<table>_RESPONSE_CHANNEL` | Northbound orch response after APPL_DB intent processing (`NotificationProducer` / `NotificationConsumer`). |
 
 ## Northbound State And Responses
 
@@ -293,7 +279,7 @@ syncd flex counter logic
 | Config source to mgrd/orch | CLI/config / `Table` | `CONFIG_DB:*` | mgrd/orch `Consumer` backed by `SubscriberStateTable` |
 | mgrd intent to orch | mgrd / `ProducerStateTable` | `APPL_DB:*` pending state | orch / `ConsumerStateTable` |
 | orch SAI request to syncd | orch through sairedis / `ProducerTable`-style ASIC operation | `ASIC_DB:ASIC_STATE:*` | syncd / `ConsumerTable` |
-| syncd SAI response to orch | syncd / `NotificationProducer` | ASIC DB response channel | sairedis client side / `NotificationConsumer` |
+| syncd SAI response to orch | syncd / `ProducerTable` | `ASIC_DB:GETRESPONSE` | sairedis client side / `ConsumerTable` |
 | syncd async event to orch | syncd / `NotificationProducer` | `ASIC_DB:NOTIFICATIONS` | orch / `NotificationConsumer` |
 | orch state to mgrd | orch / `Table` | `STATE_DB:*` | mgrd / `Table` or `SubscriberStateTable` |
 | orch APPL response to producer | orch / `NotificationProducer` | `APPL_DB_<table>_RESPONSE_CHANNEL` | mgrd/sync daemon / `NotificationConsumer` |
@@ -312,8 +298,8 @@ syncd flex counter logic
 - SAI object programming uses sairedis as a Redis-backed SAI implementation:
   orch calls SAI, sairedis serializes into ASIC_DB, syncd calls real vendor
   SAI.
-- SAI request responses use an ASIC DB response channel with
-  `NotificationProducer` / `NotificationConsumer`.
+- SAI request responses use `ASIC_DB:GETRESPONSE` with `ProducerTable` (syncd)
+  / `ConsumerTable` (sairedis client side).
 - `ASIC_DB:NOTIFICATIONS` is for unsolicited async events and is consumed by
   orchagent with `NotificationConsumer`, not by the sairedis client API.
 - Redis response serialization belongs to syncd/sairedis-side code after
