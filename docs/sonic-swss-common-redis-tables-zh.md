@@ -492,7 +492,8 @@ bridge 使用 `ProducerStateTable`，所以它只會寫 pending APPL state 與 k
 
 實作把命名合約保留在本 repo：
 
-- `src/swss/common/custom_schema.py` 定義 examples 共用的 Python table constants。
+- `src/swss/common/schema.py` 定義 examples 共用的 Python table constants。
+- `src/swss/_path_setup.py` 是共用的 bootstrap，把 swsscommon 加入 `sys.path`。
 - `src/swss/custom_tables/example_schema.h` 定義 C/C++ table constants。
 - `src/swss/custom_tables/config_db_producer.py` 用 `Table` 寫 CONFIG_DB。
 - `src/swss/custom_tables/config_to_appl_bridge.py` 用 `SubscriberStateTable`
@@ -535,16 +536,21 @@ syncd
 
 - `src/swss/vlan_table/config_vlan_command.py` 模擬 `config vlan add/del`。
 - `src/swss/vlan_table/vlanmgrd.py` 把 `CONFIG_DB VLAN` 轉成 APPL pending state，consume APPL response notification，也可觀察 `STATE_DB PORT_TABLE`。
-- `src/swss/vlan_table/portorch.py` 模擬真實 `PortsOrch`：consume APPL pending state、enqueue ASIC operation、讀 sairedis GETRESPONSE、publish APPL response、處理 async ASIC notification。
+- `src/swss/vlan_table/portorch.py` 模擬真實 `PortsOrch`：consume APPL pending state、enqueue ASIC operation、讀 sairedis GETRESPONSE、publish APPL response。`VlanFlowOrch` class 管理 VLAN request/response lifecycle。
+- `src/swss/vlan_table/notification_orch.py` 處理 async ASIC notification，寫入 `STATE_DB PORT_TABLE`。`NotificationFlowOrch` class 把 notification flow 獨立出來。
 - `src/swss/vlan_table/syncd.py` consume ASIC operation、寫入 fake sairedis GETRESPONSE，也可送出 async port notification。
 
 `portorch.py` 是 VLAN 範例裡唯一刻意用小型物件導向整理的 script。原因是
 它同時持有 APPL/ASIC DB connection、table object、GETRESPONSE consumer、APPL
-response producer、async notification consumer，以及 in-flight VLAN request map。
-`PortsOrchDemo` 把這些共享狀態集中起來，並把三條 flow 分開：
+response producer，以及 in-flight VLAN request map。
+`VlanFlowOrch`（在 `portorch.py`）把這些共享狀態集中起來，並把兩條 flow 分開：
 
 - `handle_vlan_update`：`APPL_DB VLAN_TABLE` -> `ASIC_DB` operation queue。
 - `handle_sai_response`：`ASIC_DB GETRESPONSE` -> APPL response channel。
+
+async notification path 是獨立的 notification flow，由 `NotificationFlowOrch`（在
+`notification_orch.py`）處理：
+
 - `handle_notification`：`ASIC_DB:NOTIFICATIONS` -> `STATE_DB PORT_TABLE`。
 
 只有 VLAN request/response path 有明確狀態：
@@ -553,7 +559,7 @@ response producer、async notification consumer，以及 in-flight VLAN request 
 APPL_RECEIVED -> ASIC_SENT -> ASIC_RESPONDED -> APPL_RESPONDED
 ```
 
-async notification path 不是 request lifecycle，所以維持普通 event handler，
+async notification path 不是 request lifecycle，所以放在獨立的 class，
 沒有硬塞進同一個 state machine。
 
 ## Running The Examples
@@ -594,25 +600,17 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
   src/swss/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
-VLAN flow 可在三個 terminal 啟動 watch components，再送 config command：
+VLAN flow 使用 daemon 模式，在兩個 terminal 啟動：
+
+Terminal 1 — 啟動 daemon（syncd + portorch + vlanmgrd 在同一個 process）：
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
+  src/swss/vlan_table/daemon.py
 ```
 
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
-```
+Terminal 2 — 觸發 flow：
 
 ```bash
 cd /home/ubuntu/swss-common-example
@@ -641,17 +639,7 @@ VLAN flow：
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh daemon
 ```
 
 ```bash

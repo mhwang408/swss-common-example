@@ -511,8 +511,10 @@ key set. This example intentionally has no APPL table owner, so the final
 
 The implementation keeps the naming contract local to this repository:
 
-- `src/swss/common/custom_schema.py` defines Python table constants shared by the
+- `src/swss/common/schema.py` defines Python table constants shared by the
   examples.
+- `src/swss/_path_setup.py` is the shared bootstrap that adds swsscommon to
+  `sys.path`.
 - `src/swss/custom_tables/example_schema.h` mirrors those constants for C/C++.
 - `src/swss/custom_tables/config_db_producer.py` writes config with `Table`.
 - `src/swss/custom_tables/config_to_appl_bridge.py` watches config with
@@ -558,19 +560,21 @@ The implementation maps each SONiC component role to a small Python script:
 - `src/swss/vlan_table/vlanmgrd.py` bridges `CONFIG_DB VLAN` to APPL pending state
   consumes APPL response notifications, and can observe `STATE_DB PORT_TABLE`.
 - `src/swss/vlan_table/portorch.py` consumes APPL pending state and queues ASIC
-  operations, reads sairedis GETRESPONSE entries, publishes APPL responses, and
-  handles async ASIC notifications.
+  operations, reads sairedis GETRESPONSE entries, and publishes APPL responses.
+- `src/swss/vlan_table/notification_orch.py` handles async ASIC notifications and
+  writes `STATE_DB PORT_TABLE`.
 - `src/swss/vlan_table/syncd.py` consumes ASIC operations, logs a fake ASIC write,
   writes sairedis GETRESPONSE entries, and can emit async port notifications.
 
 `portorch.py` is intentionally object-oriented while the smaller scripts remain
-function-based. `PortsOrchDemo` owns the APPL/ASIC DB connections, table objects,
-GETRESPONSE consumer, APPL response producer, async notification consumer, and
-in-flight VLAN request map. This keeps the three flows distinct:
+function-based. `VlanFlowOrch` (in `portorch.py`) owns the APPL/ASIC DB
+connections, table objects, GETRESPONSE consumer, APPL response producer, and
+in-flight VLAN request map. `NotificationFlowOrch` (in `notification_orch.py`)
+handles the independent async notification flow. This keeps the flows distinct:
 
 - `handle_vlan_update`: `APPL_DB VLAN_TABLE` -> `ASIC_DB` operation queue.
 - `handle_sai_response`: `ASIC_DB GETRESPONSE` -> APPL response channel.
-- `handle_notification`: `ASIC_DB:NOTIFICATIONS` -> `STATE_DB PORT_TABLE`.
+- `handle_notification` (in `NotificationFlowOrch`): `ASIC_DB:NOTIFICATIONS` -> `STATE_DB PORT_TABLE`.
 
 Only the VLAN request/response path has explicit state:
 
@@ -620,26 +624,18 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
   src/swss/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
-For the VLAN flow, start `syncd`, `portorch`, and `vlanmgrd` in separate
-terminals, then run the config command:
+For the VLAN flow, start the daemon (runs syncd + portorch + vlanmgrd in one
+process), then run the config command:
+
+Terminal 1 — start the daemon:
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
+  src/swss/vlan_table/daemon.py
 ```
 
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
-```
+Terminal 2 — trigger the flow:
 
 ```bash
 cd /home/ubuntu/swss-common-example
@@ -669,17 +665,7 @@ VLAN flow:
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh daemon
 ```
 
 ```bash

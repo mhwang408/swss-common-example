@@ -734,27 +734,15 @@ docker compose up -d database
 
 ### Method 1: Pure bash commands
 
-在三個 terminal 啟動 watch components：
+Terminal 1 — 啟動 daemon（syncd + portorch + vlanmgrd 在同一個 process）：
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
+  src/swss/vlan_table/daemon.py
 ```
 
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
-```
-
-第四個 terminal 模擬 `config vlan add 100`：
+Terminal 2 — 模擬 `config vlan add 100`：
 
 ```bash
 cd /home/ubuntu/swss-common-example
@@ -777,17 +765,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh daemon
 ```
 
 ```bash
@@ -857,12 +835,15 @@ config command -> CONFIG_DB check -> vlanmgrd -> APPL_DB check
 `ConsumerTable.pop()` 的哪個 call 內，同時避免在主流程散落大量 before/after
 marker code。
 
-`portorch.py` 另外用 `PortsOrchDemo` class 整理多條 flow，因為它同時處理：
+`portorch.py` 用 `VlanFlowOrch` class 整理 VLAN request/response flow，`notification_orch.py` 用 `NotificationFlowOrch` class 處理 async notification flow。`VlanFlowOrch` 同時處理：
 
 - APPL_DB `VLAN_TABLE` consumer。
 - ASIC_DB `ASIC_STATE:*` producer。
 - ASIC_DB `GETRESPONSE` consumer。
 - APPL response channel producer。
+
+`NotificationFlowOrch` 處理：
+
 - ASIC_DB `NOTIFICATIONS` consumer。
 - STATE_DB `PORT_TABLE` writer。
 
