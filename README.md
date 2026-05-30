@@ -343,7 +343,7 @@ Terminal 1 — start the daemon (runs syncd + portorch + vlanmgrd in one process
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/daemon.py --vlan-id 100
+  src/swss/vlan_table/daemon.py
 ```
 
 Terminal 2 — trigger the flow:
@@ -386,7 +386,7 @@ VLAN flow, two terminals:
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh daemon --vlan-id 100
+scripts/run_vlan_table_example.sh daemon
 ```
 
 ```bash

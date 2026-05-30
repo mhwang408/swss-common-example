@@ -83,7 +83,7 @@ show_redis "APPL_DB final before consumers start, should be empty" -n 0 HGETALL 
 
 show_cmd "2. Start daemon (syncd + portorch + vlanmgrd in one process)"
 daemon_name="swss-common-example-verify-daemon-$$"
-run_runner_bg "$daemon_name" src/swss/vlan_table/daemon.py --vlan-id "$vlan_id"
+run_runner_bg "$daemon_name" src/swss/vlan_table/daemon.py
 sleep 1
 
 show_cmd "3. config command triggers the full chain via daemon"

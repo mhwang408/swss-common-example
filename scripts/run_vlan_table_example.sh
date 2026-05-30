@@ -21,7 +21,7 @@ Usage:
   scripts/run_vlan_table_example.sh verify [vlan_id]
 
 Examples:
-  scripts/run_vlan_table_example.sh daemon --vlan-id 100
+  scripts/run_vlan_table_example.sh daemon
   scripts/run_vlan_table_example.sh config-add 100
   scripts/run_vlan_table_example.sh verify 100
 EOF

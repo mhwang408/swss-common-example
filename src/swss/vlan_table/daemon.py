@@ -6,9 +6,11 @@ SONiC-style components in one process sharing a single event loop, so the
 entire pipeline runs in one container alongside the Redis ``database``
 container.
 
+The daemon handles any VLAN — no ID filter required.
+
 Usage::
 
-    python3 src/swss/vlan_table/daemon.py --vlan-id 100
+    python3 src/swss/vlan_table/daemon.py
 """
 
 from __future__ import annotations
@@ -21,7 +23,6 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import _path_setup  # noqa: F401
 
-from common.db_logging import emit_redis_marker, marked_redis_operation
 from common.schema import (
     APP_VLAN_TABLE_NAME,
     APPL_DB,
@@ -46,20 +47,23 @@ from common.select_loop import SelectLoop
 from common.swss import field_value_pairs, load_db_config, swsscommon
 
 
+def _vlan_id_from_key(key: str) -> str:
+    """Extract numeric VLAN ID from a key like ``Vlan100``."""
+    return key[len(VLAN_PREFIX):] if key.startswith(VLAN_PREFIX) else key
+
+
 def main() -> None:
     """Start syncd + portorch + vlanmgrd in a shared event loop."""
     parser = argparse.ArgumentParser(
         description="Run syncd, portorch, and vlanmgrd together as one daemon."
     )
-    parser.add_argument("--vlan-id", default="100", help="VLAN ID to process")
-    parser.add_argument("--port", default="Ethernet0", help="port for notification demo")
     parser.add_argument("--db-config", help="path to database_config.json")
     args = parser.parse_args()
 
     load_db_config(args.db_config)
 
-    vlan_key = "%s%s" % (VLAN_PREFIX, args.vlan_id)
-    asic_key = asic_vlan_key(args.vlan_id)
+    # Track in-flight ASIC keys to map GETRESPONSE back to VLAN keys
+    asic_to_vlan: dict[str, str] = {}
 
     # --- DB connections ---
     config_db = swsscommon.DBConnector(CONFIG_DB, 0, False)
@@ -88,25 +92,28 @@ def main() -> None:
     asic_consumer = swsscommon.ConsumerTable(asic_db, ASIC_VLAN_TABLE_NAME)
     getresponse_producer = swsscommon.ProducerTable(asic_db, ASIC_GET_RESPONSE_TABLE_NAME)
 
-    # --- vlanmgrd: replay existing config ---
+    # --- vlanmgrd: replay all existing VLAN config ---
     config_table = swsscommon.Table(config_db, CFG_VLAN_TABLE_NAME)
-    status, field_vals = config_table.get(vlan_key)
-    if status:
-        config = {f: v for f, v in field_vals}
-        vid = config.get("vlanid", args.vlan_id)
-        appl_producer.set(vlan_key, field_value_pairs({"vlanid": vid}))
-        print("vlanmgrd: replayed %s %s|%s" % (CONFIG_DB, CFG_VLAN_TABLE_NAME, vlan_key))
+    keys = config_table.getKeys()
+    for key in keys:
+        status, fvs = config_table.get(key)
+        if not status:
+            continue
+        config = {f: v for f, v in fvs}
+        vid = config.get("vlanid", _vlan_id_from_key(key))
+        appl_producer.set(key, field_value_pairs({"vlanid": vid}))
+        print("vlanmgrd: replayed %s %s|%s" % (CONFIG_DB, CFG_VLAN_TABLE_NAME, key))
 
     # --- handlers ---
 
     def handle_config_update(_sel: Any) -> object | None:
-        """vlanmgrd: forward CONFIG_DB changes to APPL_DB."""
+        """vlanmgrd: forward CONFIG_DB VLAN changes to APPL_DB."""
         key, op, fvs = config_subscriber.pop()
-        if key != vlan_key:
+        if not key.startswith(VLAN_PREFIX):
             return None
         if op == OP_SET:
             config = {f: v for f, v in fvs}
-            vid = config.get("vlanid", args.vlan_id)
+            vid = config.get("vlanid", _vlan_id_from_key(key))
             appl_producer.set(key, field_value_pairs({"vlanid": vid}))
             print("vlanmgrd: %s %s|%s SET -> %s %s:%s" % (
                 CONFIG_DB, CFG_VLAN_TABLE_NAME, key, APPL_DB, APP_VLAN_TABLE_NAME, key,
@@ -119,28 +126,31 @@ def main() -> None:
         return None
 
     def handle_vlan_update(_sel: Any) -> object | None:
-        """portorch: consume APPL_DB, enqueue ASIC operation."""
+        """portorch: consume APPL_DB VLAN_TABLE, enqueue ASIC operation."""
         key, op, fvs = vlan_consumer.pop()
-        if key != vlan_key:
+        if not key.startswith(VLAN_PREFIX):
             return None
         print("PortsOrch: %s %s:%s %s" % (APPL_DB, APP_VLAN_TABLE_NAME, key, op))
-        ak = asic_vlan_key(args.vlan_id)
+        vid = _vlan_id_from_key(key)
+        ak = asic_vlan_key(vid)
         if op == OP_SET:
             fields = {f: v for f, v in fvs}
             asic_producer.set(ak, field_value_pairs({
-                "SAI_VLAN_ATTR_VLAN_ID": fields.get("vlanid", args.vlan_id),
+                "SAI_VLAN_ATTR_VLAN_ID": fields.get("vlanid", vid),
                 "source": "PortsOrch",
             }))
+            asic_to_vlan[ak] = key
             print("PortsOrch: queued SAI create %s:%s" % (ASIC_VLAN_TABLE_NAME, ak))
         elif op == OP_DEL:
             asic_producer.delete(ak)
+            asic_to_vlan[ak] = key
             print("PortsOrch: queued SAI remove %s:%s" % (ASIC_VLAN_TABLE_NAME, ak))
         return None
 
     def handle_asic_update(_sel: Any) -> object | None:
-        """syncd: consume ASIC_DB, send GETRESPONSE."""
+        """syncd: consume ASIC_DB operations, send GETRESPONSE."""
         key, op, fvs = asic_consumer.pop()
-        if key != asic_key:
+        if not key:
             return None
         print("syncd: %s %s:%s %s" % (ASIC_DB, ASIC_VLAN_TABLE_NAME, key, op))
         print("syncd: pretend write ASIC %s %s" % (op, key))
@@ -156,9 +166,12 @@ def main() -> None:
     def handle_getresponse(_sel: Any) -> object | None:
         """portorch: read GETRESPONSE, publish APPL response."""
         status, op, fvs = response_consumer.pop()
+        if op != ASIC_GET_RESPONSE_OP:
+            return None
         fields = {f: v for f, v in fvs}
         rkey = fields.get("request_key", "")
-        if op != ASIC_GET_RESPONSE_OP or rkey != asic_key:
+        vlan_key = asic_to_vlan.pop(rkey, "")
+        if not vlan_key:
             return None
         print("PortsOrch: ASIC response %s %s" % (status, rkey))
         orch_status = "SWSS_RC_SUCCESS" if status == "SAI_STATUS_SUCCESS" else "SWSS_RC_UNKNOWN"
@@ -177,7 +190,7 @@ def main() -> None:
         if op != NOTIFICATION_PORT_STATE_CHANGE:
             return None
         fields = {f: v for f, v in fvs}
-        port = fields.get("port", data or args.port)
+        port = fields.get("port", data)
         oper_status = fields.get("oper_status", "unknown")
         port_state_table.set(port, field_value_pairs({"state": oper_status, "source": "PortsOrch"}))
         print("PortsOrch: %s %s -> %s %s|%s" % (op, port, STATE_DB, STATE_PORT_TABLE_NAME, port))
@@ -191,7 +204,7 @@ def main() -> None:
     select_loop.add(response_consumer, handle_getresponse)
     select_loop.add(notification_consumer, handle_notification)
 
-    print("daemon: syncd + portorch + vlanmgrd ready (vlan-id=%s)" % args.vlan_id)
+    print("daemon: syncd + portorch + vlanmgrd ready")
     select_loop.run()
 
 
