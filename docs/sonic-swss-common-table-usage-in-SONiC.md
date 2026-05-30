@@ -100,14 +100,14 @@ CLI/config tooling
 
 | Flow | Producer / Table | DB / Table | Consumer / Table |
 | --- | --- | --- | --- |
-| Config write | CLI/config tooling / `Table` | `CONFIG_DB:<table>|<key>` | mgrd or orch / `Consumer` backed by `SubscriberStateTable` |
+| Config write | CLI/config tooling / `Table` | `CONFIG_DB:<table>\|<key>` | mgrd or orch / `Consumer` backed by `SubscriberStateTable` |
 | App desired state | mgrd / `ProducerStateTable` | `APPL_DB:<table>:<key>` pending `_TABLE:key` and `<TABLE>_KEY_SET` | orch / `ConsumerStateTable` |
 
 For the VLAN example:
 
 | Flow | Producer / Table | DB / Table | Consumer / Table |
 | --- | --- | --- | --- |
-| VLAN config | config command / `Table` | `CONFIG_DB:VLAN|Vlan100` | `vlanmgrd` / `SubscriberStateTable` or startup `Table.get` |
+| VLAN config | config command / `Table` | `CONFIG_DB:VLAN\|Vlan100` | `vlanmgrd` / `SubscriberStateTable` or startup `Table.get` |
 | VLAN app intent | `vlanmgrd` / `ProducerStateTable` | `APPL_DB:VLAN_TABLE:Vlan100` via pending `_VLAN_TABLE:Vlan100` | `PortsOrch` / `ConsumerStateTable` |
 
 The real SONiC APPL_DB consumer for `VLAN_TABLE` is `PortsOrch`, not a separate
@@ -188,7 +188,7 @@ orchagent handles `ASIC_DB:NOTIFICATIONS` with
 | Flow | Producer / Table | DB / Table / Channel | Consumer / Table |
 | --- | --- | --- | --- |
 | Async event input | syncd / `NotificationProducer` | `ASIC_DB:NOTIFICATIONS` | orchagent feature orch / `NotificationConsumer` |
-| Port state output | `PortsOrch` / `Table` | `STATE_DB:PORT_TABLE|<port>` | `portmgrd` / `Table`; `intfmgrd` and others / `SubscriberStateTable` |
+| Port state output | `PortsOrch` / `Table` | `STATE_DB:PORT_TABLE\|<port>` | `portmgrd` / `Table`; `intfmgrd` and others / `SubscriberStateTable` |
 | FDB event output | `FdbOrch` / `Table` | `STATE_DB:FDB_TABLE` | `fdbsyncd` / `SubscriberStateTable` |
 
 Do not confuse these channels:
@@ -207,7 +207,7 @@ operations.
 
 | Flow | Producer / Table | DB / Table / Channel | Consumer / Table |
 | --- | --- | --- | --- |
-| Operational state | orch / `Table` | `STATE_DB:<table>|<key>` | mgrd/sync daemon / `Table` or `SubscriberStateTable` |
+| Operational state | orch / `Table` | `STATE_DB:<table>\|<key>` | mgrd/sync daemon / `Table` or `SubscriberStateTable` |
 | Applied APPL intent state | orch `ResponsePublisher` / `Table` | `APPL_STATE_DB:<table>:<key>` | mgrd/sync daemon / `Table` |
 | APPL intent response | orch `ResponsePublisher` / `NotificationProducer` | `APPL_DB_<table>_RESPONSE_CHANNEL` | mgrd/sync daemon / `NotificationConsumer` |
 
@@ -225,8 +225,8 @@ COUNTERS_DB for display data.
 
 | Flow | Producer / Table | DB / Table | Consumer / Table |
 | --- | --- | --- | --- |
-| Enable route flow counter | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE|FLOW_CNT_ROUTE` | `FlexCounterOrch` / orch `Consumer` backed by `SubscriberStateTable` |
-| Route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE|<vrf>|<prefix>` | `FlowCounterRouteOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Enable route flow counter | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE\|FLOW_CNT_ROUTE` | `FlexCounterOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE\|<vrf>\|<prefix>` | `FlowCounterRouteOrch` / orch `Consumer` backed by `SubscriberStateTable` |
 | Polling setup, traditional mode | `FlowCounterRouteOrch` via `FlexCounterManager` / `ProducerTable` | `FLEX_COUNTER_DB:FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` field `FLOW_COUNTER_ID_LIST` | syncd flex counter logic |
 | Route-to-counter mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP` | CLI/display / `Table` or direct Redis hash read |
 | Route-to-pattern mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` or direct Redis hash read |
@@ -297,8 +297,8 @@ syncd flex counter logic
 | syncd async event to orch | syncd / `NotificationProducer` | `ASIC_DB:NOTIFICATIONS` | orch / `NotificationConsumer` |
 | orch state to mgrd | orch / `Table` | `STATE_DB:*` | mgrd / `Table` or `SubscriberStateTable` |
 | orch APPL response to producer | orch / `NotificationProducer` | `APPL_DB_<table>_RESPONSE_CHANNEL` | mgrd/sync daemon / `NotificationConsumer` |
-| route flow counter enable | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE|FLOW_CNT_ROUTE` | `FlexCounterOrch` / `Consumer` backed by `SubscriberStateTable` |
-| route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE|<vrf>|<prefix>` | `FlowCounterRouteOrch` / `Consumer` backed by `SubscriberStateTable` |
+| route flow counter enable | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE\|FLOW_CNT_ROUTE` | `FlexCounterOrch` / `Consumer` backed by `SubscriberStateTable` |
+| route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE\|<vrf>\|<prefix>` | `FlowCounterRouteOrch` / `Consumer` backed by `SubscriberStateTable` |
 | route polling setup, traditional mode | `FlowCounterRouteOrch` via `FlexCounterManager` / `ProducerTable` | `FLEX_COUNTER_DB:FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` | syncd flex counter logic |
 | counter mappings | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP`, `COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` or direct Redis read |
 | counter stats | syncd flex counter polling / `Table`-style hash write | `COUNTERS_DB:COUNTERS:<counter_oid>` | CLI/display / `Table` or direct Redis read |
