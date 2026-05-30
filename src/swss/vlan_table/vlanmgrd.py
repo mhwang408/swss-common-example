@@ -235,9 +235,6 @@ def watch_config_updates(
             print("vlanmgrd: ignoring %s %s|%s op %s" % (
                 CONFIG_DB, CFG_VLAN_TABLE_NAME, key, op,
             ))
-
-        if not args.watch:
-            return SelectLoop.STOP
         return None
 
     select_loop.add(config_subscriber, handle_config_update)
@@ -251,12 +248,14 @@ def bridge_config_to_appl(args: argparse.Namespace) -> None:
     appl_db = swsscommon.DBConnector(APPL_DB, 0, False)
     appl_table = swsscommon.ProducerStateTable(appl_db, APP_VLAN_TABLE_NAME)
 
-    print("vlanmgrd: waiting for %s %s|%s updates" % (
+    print("vlanmgrd: replaying %s %s|%s" % (
         CONFIG_DB, CFG_VLAN_TABLE_NAME, key_filter,
     ))
-    if not args.watch and replay_config(config_db, appl_db, appl_table, key_filter):
-        return
+    replay_config(config_db, appl_db, appl_table, key_filter)
 
+    print("vlanmgrd: watching %s %s|%s for updates" % (
+        CONFIG_DB, CFG_VLAN_TABLE_NAME, key_filter,
+    ))
     watch_config_updates(args, config_db, appl_db, appl_table, key_filter)
 
 
@@ -280,7 +279,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--watch", action="store_true",
-        help="continue processing updates instead of exiting after one event",
+        help="keep --wait-appl-response or --state-port running after first event",
     )
     parser.add_argument("--db-config", help="path to database_config.json")
     args = parser.parse_args()

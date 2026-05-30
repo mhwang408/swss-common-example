@@ -91,7 +91,8 @@ run_runner_bg "$vlanmgrd_response_name" src/swss/vlan_table/vlanmgrd.py --vlan-i
 sleep 1
 
 show_cmd "3. vlanmgrd reads CONFIG_DB and publishes APPL_DB (triggers portorch -> syncd chain)"
-run_runner src/swss/vlan_table/vlanmgrd.py --vlan-id "$vlan_id"
+vlanmgrd_name="swss-common-example-verify-vlanmgrd-$$"
+run_runner_bg "$vlanmgrd_name" src/swss/vlan_table/vlanmgrd.py --vlan-id "$vlan_id"
 sleep 1
 show_redis "APPL_DB final after portorch consumed" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
 show_redis "APPL_DB pending key set after portorch, should be empty" -n 0 SMEMBERS "VLAN_TABLE_KEY_SET"

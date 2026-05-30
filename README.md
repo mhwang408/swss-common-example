@@ -356,7 +356,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+  src/swss/vlan_table/vlanmgrd.py --vlan-id 100
 ```
 
 ```bash
@@ -407,7 +407,7 @@ scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
+scripts/run_vlan_table_example.sh mgrd --vlan-id 100
 ```
 
 ```bash
