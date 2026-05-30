@@ -60,8 +60,12 @@ syncd.py
   -> materialize DB 1 final hash:
      ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
   -> pretend write ASIC
-  NotificationProducer(ASIC_DB, "SAI_RESPONSE").send(...)
-  -> SAI response channel 回到 PortsOrch / sairedis requester
+  ProducerTable(ASIC_DB, "GETRESPONSE").set("SAI_STATUS_SUCCESS", ..., "getresponse")
+  -> sairedis GETRESPONSE table 回到 PortsOrch / sairedis requester
+
+portorch.py
+  NotificationProducer(APPL_STATE_DB, "APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL").send(...)
+  -> APPL response channel 回到 vlanmgrd / northbound producer
 
 syncd.py async notification
   NotificationProducer(ASIC_DB, "NOTIFICATIONS").send("port_state_change", ...)
@@ -80,9 +84,10 @@ syncd.py async notification
 | 4 | PortsOrch | APPL_DB pending | `ConsumerStateTable.pop` | `VLAN_TABLE:Vlan100` | APPL table owner 消費 pending state，並 materialize final APPL_DB hash。 |
 | 5 | PortsOrch | APPL_DB final/update | `ProducerTable.set` | ASIC_DB queue | ASIC operation 需要有序傳給 syncd；每個 create/remove/set operation 都重要。 |
 | 6 | syncd | ASIC_DB queue | `ConsumerTable.pop` | ASIC_DB final hash + fake ASIC write | syncd 是 ASIC_DB operation stream 的 consumer；pop 時 materialize final ASIC_DB hash。 |
-| 7 | syncd | SAI operation result | `NotificationProducer.send` | ASIC_DB response channel | SAI create/remove 的同步結果回給 requester；本例用 `SAI_RESPONSE` channel 表示。 |
-| 8 | syncd | ASIC async event | `NotificationProducer.send` | ASIC_DB `NOTIFICATIONS` channel | port state change 這類 async event 不是 table operation queue。 |
-| 9 | PortsOrch | ASIC async notification | `NotificationConsumer.pop` + `Table.set` | `STATE_DB PORT_TABLE|Ethernet0` | `PortsOrch` 把 syncd notification 轉成可被 mgrd/其他 daemon 讀取的 state table。 |
+| 7 | syncd | SAI operation result | `ProducerTable.set` | `ASIC_DB GETRESPONSE` with op `getresponse` | SAI create/remove 的同步結果回給 requester；這是 sairedis/syncd 的實際 Redis sync response path。 |
+| 8 | PortsOrch | SAI operation result | `NotificationProducer.send` | `APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL` on `APPL_STATE_DB` | `PortsOrch` 把 ASIC result propagate 回 vlanmgrd/northbound producer。 |
+| 9 | syncd | ASIC async event | `NotificationProducer.send` | ASIC_DB `NOTIFICATIONS` channel | port state change 這類 async event 不是 table operation queue。 |
+| 10 | PortsOrch | ASIC async notification | `NotificationConsumer.pop` + `Table.set` | `STATE_DB PORT_TABLE|Ethernet0` | `PortsOrch` 把 syncd notification 轉成可被 mgrd/其他 daemon 讀取的 state table。 |
 
 最重要的結論：
 
@@ -100,7 +105,8 @@ ASIC_DB final hash:
 
 SAI response:
   不是另一個 ASIC_STATE table
-  是 syncd 透過 ASIC_DB response channel 回覆 requester
+  是 syncd 透過 ASIC_DB `GETRESPONSE` table 回覆 requester，op 是 `getresponse`
+  然後 PortsOrch 透過 APPL response channel 回覆 vlanmgrd / northbound producer
 
 Async notification:
   不是 vlanmgrd 直接從 syncd 收到
@@ -113,10 +119,10 @@ SONiC Redis table 本質上不是 Redis 需要預先宣告的 schema，而是「
 
 以 VLAN 建立流程為例，至少要明確知道：
 
-- 使用哪個 DB：`CONFIG_DB` 是 DB 4，`APPL_DB` 是 DB 0，`ASIC_DB` 是 DB 1，`STATE_DB` 是 DB 6。
+- 使用哪個 DB：`CONFIG_DB` 是 DB 4，`APPL_DB` 是 DB 0，`ASIC_DB` 是 DB 1，`STATE_DB` 是 DB 6，`APPL_STATE_DB` 是 DB 14。
 - table 名稱：`CONFIG_DB` 使用 `VLAN`，`APPL_DB` 使用 `VLAN_TABLE`。
 - `ASIC_DB` 的 VLAN 範例使用 `ASIC_STATE:SAI_OBJECT_TYPE_VLAN`。
-- SAI response 用 ASIC_DB response channel；async event 用 ASIC_DB `NOTIFICATIONS` channel。
+- SAI response 用 ASIC_DB `GETRESPONSE` table；APPL response 用 `APPL_DB_<table>_RESPONSE_CHANNEL` on `APPL_STATE_DB`；async event 用 ASIC_DB `NOTIFICATIONS` channel。
 - async port state 最後會被 PortsOrch materialize 到 `STATE_DB PORT_TABLE|Ethernet0`。
 - key separator：`CONFIG_DB` 用 `|`，`APPL_DB` / `ASIC_DB` 用 `:`。
 - 欄位語意：`vlanid` 表示 VLAN ID。
@@ -733,19 +739,19 @@ docker compose up -d database
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/syncd.py --vlan-id 100 --watch
+  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/portorch.py --vlan-id 100 --watch
+  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
 ```
 
 第四個 terminal 模擬 `config vlan add 100`：
@@ -753,7 +759,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/config_vlan_command.py add 100
+  src/swss/vlan_table/config_vlan_command.py add 100
 ```
 
 驗證 add path 後，可再測 delete：
@@ -761,7 +767,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/config_vlan_command.py del 100
+  src/swss/vlan_table/config_vlan_command.py del 100
 ```
 
 ### Method 2: Helper scripts

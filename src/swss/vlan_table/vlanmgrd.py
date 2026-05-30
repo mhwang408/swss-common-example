@@ -4,23 +4,24 @@
 #   CONFIG_DB VLAN|Vlan100 -> APPL_DB VLAN_TABLE:Vlan100
 
 import argparse
+import sys
+from pathlib import Path
 
-from vlan_schema import APP_VLAN_TABLE_NAME as APPL_TABLE
-from vlan_schema import CFG_VLAN_TABLE_NAME as CONFIG_TABLE
-from vlan_schema import STATE_PORT_TABLE_NAME
-from vlan_schema import VLAN_PREFIX
-from vlan_log import add_log_argument
-from vlan_log import configure_logger
-from vlan_log import emit_redis_marker
-from vlan_log import log_table_event
-from swsscommon_compat import load_swsscommon
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-
-swsscommon = load_swsscommon()
-
-
-def field_value_pairs(fields):
-    return swsscommon.FieldValuePairs([(str(k), str(v)) for k, v in fields.items()])
+from common.custom_schema import APP_VLAN_TABLE_NAME as APPL_TABLE
+from common.custom_schema import APPL_RESPONSE_CHANNEL_NAME
+from common.custom_schema import CFG_VLAN_TABLE_NAME as CONFIG_TABLE
+from common.custom_schema import STATE_PORT_TABLE_NAME
+from common.custom_schema import VLAN_PREFIX
+from common.db_logging import add_log_argument
+from common.db_logging import configure_logger
+from common.db_logging import emit_redis_marker
+from common.db_logging import log_table_event
+from common.select_loop import SelectLoop
+from common.swss import field_value_pairs
+from common.swss import load_db_config
+from common.swss import swsscommon
 
 
 def default_vlan_id_from_key(key):
@@ -90,12 +91,60 @@ def publish_delete(appl_db, appl_table, logger, key):
     ))
 
 
+def wait_for_appl_response(args, logger):
+    key_filter = "%s%s" % (VLAN_PREFIX, args.vlan_id)
+    appl_state_db = swsscommon.DBConnector("APPL_STATE_DB", 0, False)
+    response_consumer = swsscommon.NotificationConsumer(appl_state_db, APPL_RESPONSE_CHANNEL_NAME)
+    select_loop = SelectLoop(swsscommon)
+
+    print("vlanmgrd: waiting for APPL_STATE_DB response channel %s:%s" % (
+        APPL_RESPONSE_CHANNEL_NAME,
+        key_filter,
+    ))
+
+    def handle_response(_selectable):
+        emit_redis_marker(appl_state_db, "vlanmgrd", "before", "NotificationConsumer.pop", "APPL_STATE_DB", APPL_RESPONSE_CHANNEL_NAME, key_filter)
+        op, data, field_values = response_consumer.pop()
+        emit_redis_marker(appl_state_db, "vlanmgrd", "after", "NotificationConsumer.pop", "APPL_STATE_DB", APPL_RESPONSE_CHANNEL_NAME, key_filter)
+        if data != key_filter:
+            print("vlanmgrd: ignoring APPL response %s %s" % (op, data))
+            return None
+
+        log_table_event(
+            logger,
+            "vlanmgrd",
+            "NotificationConsumer.pop",
+            "READ",
+            "APPL_STATE_DB",
+            APPL_RESPONSE_CHANNEL_NAME,
+            data,
+            op=op,
+            fields=field_values,
+            note="Manager daemon receives PortsOrch result from APPL response channel",
+        )
+        print("vlanmgrd: APPL response %s %s" % (op, data))
+        for field, value in field_values:
+            print("  %s=%s" % (field, value))
+
+        if not args.watch:
+            return SelectLoop.STOP
+        return None
+
+    select_loop.add(response_consumer, handle_response)
+    select_loop.run()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Subscribe to CONFIG_DB VLAN changes and publish APPL_DB VLAN_TABLE updates."
     )
     parser.add_argument("--vlan-id", default="100", help="only process this VLAN ID")
     parser.add_argument("--state-port", help="watch/read STATE_DB PORT_TABLE for this port and exit")
+    parser.add_argument(
+        "--wait-appl-response",
+        action="store_true",
+        help="wait for PortsOrch APPL response channel and exit",
+    )
     parser.add_argument(
         "--watch",
         action="store_true",
@@ -109,15 +158,17 @@ def main():
     args = parser.parse_args()
     logger, _ = configure_logger(args.log_file)
 
-    if args.db_config:
-        swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
+    load_db_config(args.db_config)
+
+    if args.wait_appl_response:
+        wait_for_appl_response(args, logger)
+        return
 
     if args.state_port:
         state_db = swsscommon.DBConnector("STATE_DB", 0, False)
         state_table = swsscommon.Table(state_db, STATE_PORT_TABLE_NAME)
         state_subscriber = swsscommon.SubscriberStateTable(state_db, STATE_PORT_TABLE_NAME)
-        selector = swsscommon.Select()
-        selector.addSelectable(state_subscriber)
+        select_loop = SelectLoop(swsscommon)
 
         print("vlanmgrd: waiting for STATE_DB %s|%s updates" % (STATE_PORT_TABLE_NAME, args.state_port))
         if not args.watch:
@@ -128,18 +179,20 @@ def main():
                     print("  %s=%s" % (field, value))
                 return
 
-        while True:
-            state, selectable = selector.select()
-            if state != swsscommon.Select.OBJECT:
-                continue
+        def handle_state_update(_selectable):
             key, op, field_values = state_subscriber.pop()
             if key != args.state_port:
-                continue
+                return None
             print("vlanmgrd: STATE_DB %s|%s %s" % (STATE_PORT_TABLE_NAME, key, op))
             for field, value in field_values:
                 print("  %s=%s" % (field, value))
             if not args.watch:
-                return
+                return SelectLoop.STOP
+            return None
+
+        select_loop.add(state_subscriber, handle_state_update)
+        select_loop.run()
+        return
 
     key_filter = "%s%s" % (VLAN_PREFIX, args.vlan_id)
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
@@ -147,8 +200,7 @@ def main():
     config_table = swsscommon.Table(config_db, CONFIG_TABLE)
     config_subscriber = swsscommon.SubscriberStateTable(config_db, CONFIG_TABLE)
     appl_table = swsscommon.ProducerStateTable(appl_db, APPL_TABLE)
-    selector = swsscommon.Select()
-    selector.addSelectable(config_subscriber)
+    select_loop = SelectLoop(swsscommon)
 
     print("vlanmgrd: waiting for CONFIG_DB %s|%s updates" % (CONFIG_TABLE, key_filter))
 
@@ -172,14 +224,10 @@ def main():
             publish_set(appl_db, appl_table, logger, key_filter, field_values)
             return
 
-    while True:
-        state, selectable = selector.select()
-        if state != swsscommon.Select.OBJECT:
-            continue
-
+    def handle_config_update(_selectable):
         key, op, field_values = config_subscriber.pop()
         if key != key_filter:
-            continue
+            return None
         log_table_event(
             logger,
             "vlanmgrd",
@@ -201,7 +249,11 @@ def main():
             print("vlanmgrd: ignoring CONFIG_DB %s|%s op %s" % (CONFIG_TABLE, key, op))
 
         if not args.watch:
-            return
+            return SelectLoop.STOP
+        return None
+
+    select_loop.add(config_subscriber, handle_config_update)
+    select_loop.run()
 
 
 if __name__ == "__main__":

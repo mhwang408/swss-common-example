@@ -8,21 +8,20 @@
 #   DB 4: VLAN|Vlan100
 
 import argparse
+import sys
+from pathlib import Path
 
-from vlan_schema import CFG_VLAN_TABLE_NAME as CONFIG_TABLE
-from vlan_schema import VLAN_PREFIX
-from vlan_log import add_log_argument
-from vlan_log import configure_logger
-from vlan_log import emit_redis_marker
-from vlan_log import log_table_event
-from swsscommon_compat import load_swsscommon
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-
-swsscommon = load_swsscommon()
-
-
-def field_value_pairs(fields):
-    return swsscommon.FieldValuePairs([(str(k), str(v)) for k, v in fields.items()])
+from common.custom_schema import CFG_VLAN_TABLE_NAME as CONFIG_TABLE
+from common.custom_schema import VLAN_PREFIX
+from common.db_logging import add_log_argument
+from common.db_logging import configure_logger
+from common.db_logging import emit_redis_marker
+from common.db_logging import log_table_event
+from common.swss import field_value_pairs
+from common.swss import load_db_config
+from common.swss import swsscommon
 
 
 def vlan_key(vlan_id):
@@ -43,8 +42,7 @@ def main():
     args = parser.parse_args()
     logger, _ = configure_logger(args.log_file)
 
-    if args.db_config:
-        swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
+    load_db_config(args.db_config)
 
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
     config_table = swsscommon.Table(config_db, CONFIG_TABLE)

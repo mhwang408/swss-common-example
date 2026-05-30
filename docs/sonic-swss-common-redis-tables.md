@@ -511,10 +511,11 @@ key set. This example intentionally has no APPL table owner, so the final
 
 The implementation keeps the naming contract local to this repository:
 
-- `src/custom_tables/example_schema.py` defines Python table constants.
-- `src/custom_tables/example_schema.h` mirrors those constants for C/C++.
-- `src/custom_tables/config_db_producer.py` writes config with `Table`.
-- `src/custom_tables/config_to_appl_bridge.py` watches config with
+- `src/swss/common/custom_schema.py` defines Python table constants shared by the
+  examples.
+- `src/swss/custom_tables/example_schema.h` mirrors those constants for C/C++.
+- `src/swss/custom_tables/config_db_producer.py` writes config with `Table`.
+- `src/swss/custom_tables/config_to_appl_bridge.py` watches config with
   `SubscriberStateTable` and publishes APPL pending state with
   `ProducerStateTable`.
 
@@ -534,8 +535,10 @@ config vlan add 100
   -> ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
   -> syncd
   -> ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
-  -> ASIC_DB SAI_RESPONSE channel
+  -> ASIC_DB GETRESPONSE table with op getresponse
   -> PortsOrch
+  -> APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL on APPL_STATE_DB
+  -> vlanmgrd
 ```
 
 It also models the async notification direction used for events such as port
@@ -551,13 +554,14 @@ syncd
 
 The implementation maps each SONiC component role to a small Python script:
 
-- `src/vlan_table/config_vlan_command.py` emulates `config vlan add/del`.
-- `src/vlan_table/vlanmgrd.py` bridges `CONFIG_DB VLAN` to APPL pending state
-  and can observe `STATE_DB PORT_TABLE`.
-- `src/vlan_table/portorch.py` consumes APPL pending state and queues ASIC
-  operations, reads SAI responses, and handles async ASIC notifications.
-- `src/vlan_table/syncd.py` consumes ASIC operations, logs a fake ASIC write,
-  sends SAI responses, and can emit async port notifications.
+- `src/swss/vlan_table/config_vlan_command.py` emulates `config vlan add/del`.
+- `src/swss/vlan_table/vlanmgrd.py` bridges `CONFIG_DB VLAN` to APPL pending state
+  consumes APPL response notifications, and can observe `STATE_DB PORT_TABLE`.
+- `src/swss/vlan_table/portorch.py` consumes APPL pending state and queues ASIC
+  operations, reads sairedis GETRESPONSE entries, publishes APPL responses, and
+  handles async ASIC notifications.
+- `src/swss/vlan_table/syncd.py` consumes ASIC operations, logs a fake ASIC write,
+  writes sairedis GETRESPONSE entries, and can emit async port notifications.
 
 ## Running The Examples
 
@@ -587,7 +591,7 @@ Run bridge:
 cd /home/ubuntu/swss-common-example
 docker compose up -d database
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/custom_tables/config_to_appl_bridge.py --key demo --watch
+  src/swss/custom_tables/config_to_appl_bridge.py --key demo --watch
 ```
 
 In another terminal, write config:
@@ -595,7 +599,7 @@ In another terminal, write config:
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
+  src/swss/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
 For the VLAN flow, start `syncd`, `portorch`, and `vlanmgrd` in separate
@@ -604,25 +608,25 @@ terminals, then run the config command:
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/syncd.py --vlan-id 100 --watch
+  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/portorch.py --vlan-id 100 --watch
+  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/config_vlan_command.py add 100
+  src/swss/vlan_table/config_vlan_command.py add 100
 ```
 
 ### Method 2: Helper Scripts

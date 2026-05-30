@@ -6,15 +6,16 @@
 #   DB 4: CUSTOM_CONFIG_TABLE|demo
 
 import argparse
+import sys
 import time
+from pathlib import Path
 
-from swsscommon import swsscommon
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from example_schema import EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME as CONFIG_TABLE
-
-
-def field_value_pairs(fields):
-    return swsscommon.FieldValuePairs([(str(k), str(v)) for k, v in fields.items()])
+from common.custom_schema import EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME as CONFIG_TABLE
+from common.swss import field_value_pairs
+from common.swss import load_db_config
+from common.swss import swsscommon
 
 
 def main():
@@ -30,8 +31,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.db_config:
-        swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
+    load_db_config(args.db_config)
 
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
     config_table = swsscommon.Table(config_db, CONFIG_TABLE)

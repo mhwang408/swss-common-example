@@ -1,0 +1,24 @@
+"""Shared table-name constants for the teaching examples."""
+
+CFG_VLAN_TABLE_NAME = "VLAN"
+APP_VLAN_TABLE_NAME = "VLAN_TABLE"
+ASIC_VLAN_TABLE_NAME = "ASIC_STATE:SAI_OBJECT_TYPE_VLAN"
+ASIC_GET_RESPONSE_TABLE_NAME = "GETRESPONSE"
+ASIC_GET_RESPONSE_OP = "getresponse"
+ASIC_NOTIFICATIONS_CHANNEL_NAME = "NOTIFICATIONS"
+STATE_PORT_TABLE_NAME = "PORT_TABLE"
+VLAN_PREFIX = "Vlan"
+
+EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME = "CUSTOM_CONFIG_TABLE"
+EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME = "CUSTOM_APPL_TABLE"
+
+
+def asic_vlan_key(vlan_id):
+    return "oid:0x2600000000%04d" % int(vlan_id)
+
+
+def response_channel_name(db_name, table_name):
+    return "%s_%s_RESPONSE_CHANNEL" % (db_name, table_name)
+
+
+APPL_RESPONSE_CHANNEL_NAME = response_channel_name("APPL_DB", APP_VLAN_TABLE_NAME)

@@ -492,10 +492,10 @@ bridge 使用 `ProducerStateTable`，所以它只會寫 pending APPL state 與 k
 
 實作把命名合約保留在本 repo：
 
-- `src/custom_tables/example_schema.py` 定義 Python table constants。
-- `src/custom_tables/example_schema.h` 定義 C/C++ table constants。
-- `src/custom_tables/config_db_producer.py` 用 `Table` 寫 CONFIG_DB。
-- `src/custom_tables/config_to_appl_bridge.py` 用 `SubscriberStateTable`
+- `src/swss/common/custom_schema.py` 定義 examples 共用的 Python table constants。
+- `src/swss/custom_tables/example_schema.h` 定義 C/C++ table constants。
+- `src/swss/custom_tables/config_db_producer.py` 用 `Table` 寫 CONFIG_DB。
+- `src/swss/custom_tables/config_to_appl_bridge.py` 用 `SubscriberStateTable`
   watch CONFIG_DB，並用 `ProducerStateTable` 發布 APPL pending state。
 
 ### vlan_table
@@ -514,8 +514,10 @@ config vlan add 100
   -> ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
   -> syncd
   -> ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100
-  -> ASIC_DB SAI_RESPONSE channel
+  -> ASIC_DB GETRESPONSE table with op getresponse
   -> PortsOrch
+  -> APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL on APPL_STATE_DB
+  -> vlanmgrd
 ```
 
 它也包含 syncd 反方向送出的 async notification path。真實 SONiC 中，port
@@ -531,10 +533,10 @@ syncd
 
 實作把每個 SONiC component role 對應到小型 Python script：
 
-- `src/vlan_table/config_vlan_command.py` 模擬 `config vlan add/del`。
-- `src/vlan_table/vlanmgrd.py` 把 `CONFIG_DB VLAN` 轉成 APPL pending state，也可觀察 `STATE_DB PORT_TABLE`。
-- `src/vlan_table/portorch.py` 模擬真實 `PortsOrch`：consume APPL pending state、enqueue ASIC operation、讀 SAI response、處理 async ASIC notification。
-- `src/vlan_table/syncd.py` consume ASIC operation、送出 fake SAI response，也可送出 async port notification。
+- `src/swss/vlan_table/config_vlan_command.py` 模擬 `config vlan add/del`。
+- `src/swss/vlan_table/vlanmgrd.py` 把 `CONFIG_DB VLAN` 轉成 APPL pending state，consume APPL response notification，也可觀察 `STATE_DB PORT_TABLE`。
+- `src/swss/vlan_table/portorch.py` 模擬真實 `PortsOrch`：consume APPL pending state、enqueue ASIC operation、讀 sairedis GETRESPONSE、publish APPL response、處理 async ASIC notification。
+- `src/swss/vlan_table/syncd.py` consume ASIC operation、寫入 fake sairedis GETRESPONSE，也可送出 async port notification。
 
 ## Running The Examples
 
@@ -563,7 +565,7 @@ docker compose up -d database
 cd /home/ubuntu/swss-common-example
 docker compose up -d database
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/custom_tables/config_to_appl_bridge.py --key demo --watch
+  src/swss/custom_tables/config_to_appl_bridge.py --key demo --watch
 ```
 
 另一個 terminal 寫入 CONFIG_DB：
@@ -571,7 +573,7 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
+  src/swss/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
 VLAN flow 可在三個 terminal 啟動 watch components，再送 config command：
@@ -579,25 +581,25 @@ VLAN flow 可在三個 terminal 啟動 watch components，再送 config command�
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/syncd.py --vlan-id 100 --watch
+  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/portorch.py --vlan-id 100 --watch
+  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/config_vlan_command.py add 100
+  src/swss/vlan_table/config_vlan_command.py add 100
 ```
 
 ### Method 2: Helper scripts

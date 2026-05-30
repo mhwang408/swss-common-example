@@ -42,23 +42,23 @@ case "$component" in
         if [[ $# -gt 0 ]]; then
             shift
         fi
-        target=(src/vlan_table/config_vlan_command.py add "$vlan_id")
+        target=(src/swss/vlan_table/config_vlan_command.py add "$vlan_id")
         ;;
     config-del)
         vlan_id="${1:-100}"
         if [[ $# -gt 0 ]]; then
             shift
         fi
-        target=(src/vlan_table/config_vlan_command.py del "$vlan_id")
+        target=(src/swss/vlan_table/config_vlan_command.py del "$vlan_id")
         ;;
     mgrd)
-        target=(src/vlan_table/vlanmgrd.py)
+        target=(src/swss/vlan_table/vlanmgrd.py)
         ;;
     portorch)
-        target=(src/vlan_table/portorch.py)
+        target=(src/swss/vlan_table/portorch.py)
         ;;
     syncd)
-        target=(src/vlan_table/syncd.py)
+        target=(src/swss/vlan_table/syncd.py)
         ;;
     verify)
         exec scripts/verify_vlan_flow.sh "${1:-100}"

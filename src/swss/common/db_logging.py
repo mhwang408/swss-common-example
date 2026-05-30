@@ -1,4 +1,4 @@
-"""Shared file logging for the VLAN table teaching scripts."""
+"""Shared file and Redis marker logging for DB table examples."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def configure_logger(log_file):
     if path.exists() and not os.access(path, os.W_OK):
         path.unlink()
 
-    logger = logging.getLogger("vlan_table")
+    logger = logging.getLogger("db_table_examples")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
 

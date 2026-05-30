@@ -8,18 +8,20 @@
 #   DB 0: CUSTOM_APPL_TABLE:demo
 
 import argparse
+import sys
 import time
+from pathlib import Path
 
-from swsscommon import swsscommon
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from example_schema import (
+from common.custom_schema import (
     EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME as CONFIG_TABLE,
     EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME as APPL_TABLE,
 )
-
-
-def field_value_pairs(fields):
-    return swsscommon.FieldValuePairs([(str(k), str(v)) for k, v in fields.items()])
+from common.select_loop import SelectLoop
+from common.swss import field_value_pairs
+from common.swss import load_db_config
+from common.swss import swsscommon
 
 
 def publish_set(appl_table, key, field_values):
@@ -69,26 +71,20 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.db_config:
-        swsscommon.SonicDBConfig.load_sonic_db_config(args.db_config)
+    load_db_config(args.db_config)
 
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
     appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
     config_subscriber = swsscommon.SubscriberStateTable(config_db, CONFIG_TABLE)
     appl_table = swsscommon.ProducerStateTable(appl_db, APPL_TABLE)
-    selector = swsscommon.Select()
-    selector.addSelectable(config_subscriber)
+    select_loop = SelectLoop(swsscommon)
 
     print("Waiting for CONFIG_DB %s|%s updates" % (CONFIG_TABLE, args.key))
 
-    while True:
-        state, selectable = selector.select()
-        if state != swsscommon.Select.OBJECT:
-            continue
-
+    def handle_config_update(_selectable):
         key, op, field_values = config_subscriber.pop()
         if key != args.key:
-            continue
+            return None
 
         if op == "SET":
             publish_set(appl_table, key, field_values)
@@ -98,7 +94,11 @@ def main():
             print("Ignoring CONFIG_DB %s|%s op %s" % (CONFIG_TABLE, key, op))
 
         if not args.watch:
-            return
+            return SelectLoop.STOP
+        return None
+
+    select_loop.add(config_subscriber, handle_config_update)
+    select_loop.run()
 
 
 if __name__ == "__main__":

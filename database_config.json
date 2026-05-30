@@ -26,6 +26,11 @@
             "id": 6,
             "separator": "|",
             "instance": "redis"
+        },
+        "APPL_STATE_DB": {
+            "id": 14,
+            "separator": ":",
+            "instance": "redis"
         }
     },
     "VERSION": "1.0"

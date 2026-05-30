@@ -136,11 +136,12 @@ materialize the final `CUSTOM_APPL_TABLE:demo` hash.
 
 Files:
 
-- `src/custom_tables/example_schema.py`: Python table-name constants.
-- `src/custom_tables/example_schema.h`: C/C++ table-name constants.
-- `src/custom_tables/config_db_producer.py`: writes `CONFIG_DB` with `Table`.
-- `src/custom_tables/config_to_appl_bridge.py`: watches `CONFIG_DB` with
+- `src/swss/common/custom_schema.py`: Python table-name constants shared by all examples.
+- `src/swss/custom_tables/example_schema.h`: C/C++ table-name constants.
+- `src/swss/custom_tables/config_db_producer.py`: writes `CONFIG_DB` with `Table`.
+- `src/swss/custom_tables/config_to_appl_bridge.py`: watches `CONFIG_DB` with
   `SubscriberStateTable` and publishes `APPL_DB` with `ProducerStateTable`.
+- `src/swss/common/select_loop.py`: small fd-to-handler wrapper around `swsscommon.Select`.
 
 Key APIs:
 
@@ -172,8 +173,10 @@ config vlan add/del 100
   -> ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE
   -> syncd
   -> ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:...
-  -> ASIC_DB SAI_RESPONSE channel
+  -> ASIC_DB GETRESPONSE table with op getresponse
   -> PortsOrch
+  -> APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL on APPL_STATE_DB
+  -> vlanmgrd
 ```
 
 It also includes the asynchronous notification direction used by real SONiC
@@ -192,24 +195,25 @@ The example has four components:
 | Component | Role |
 | --- | --- |
 | `config_vlan_command.py` | Emulates `config vlan add 100` and `config vlan del 100`. |
-| `vlanmgrd.py` | Reads/watches `CONFIG_DB VLAN`, publishes APPL desired state, and can observe `STATE_DB PORT_TABLE`. |
-| `portorch.py` | Models the real `PortsOrch`: consumes APPL VLAN desired state, enqueues ASIC operations, reads SAI responses, and handles async ASIC notifications. |
-| `syncd.py` | Consumes ASIC operations, sends a fake SAI response, and can emit async ASIC notifications. |
+| `vlanmgrd.py` | Reads/watches `CONFIG_DB VLAN`, publishes APPL desired state, consumes APPL response notifications, and can observe `STATE_DB PORT_TABLE`. |
+| `portorch.py` | Models the real `PortsOrch`: consumes APPL VLAN desired state, enqueues ASIC operations, reads sairedis GETRESPONSE entries, publishes APPL responses, and handles async ASIC notifications. |
+| `syncd.py` | Consumes ASIC operations, sends a fake sairedis GETRESPONSE entry, and can emit async ASIC notifications. |
 
 #### Coding Details
 
 Files:
 
-- `src/vlan_table/vlan_schema.py`: table constants and fake ASIC OID helper.
-- `src/vlan_table/config_vlan_command.py`: `Table.set/delete` in `CONFIG_DB`.
-- `src/vlan_table/vlanmgrd.py`: `Table.get`, `SubscriberStateTable.pop`, and
+- `src/swss/common/custom_schema.py`: table constants and fake ASIC OID helper.
+- `src/swss/vlan_table/config_vlan_command.py`: `Table.set/delete` in `CONFIG_DB`.
+- `src/swss/vlan_table/vlanmgrd.py`: `Table.get`, `SubscriberStateTable.pop`, and
   `ProducerStateTable.set/delete`.
-- `src/vlan_table/portorch.py`: `ConsumerStateTable.pop` and
-  `ProducerTable.set/delete`, plus `NotificationConsumer` for ASIC response
-  and async notification channels.
-- `src/vlan_table/syncd.py`: `ConsumerTable.pop`, `NotificationProducer` for
-  SAI responses, and `NotificationProducer` for async notifications.
-- `src/vlan_table/vlan_log.py`: structured logs and verification markers.
+- `src/swss/vlan_table/portorch.py`: `ConsumerStateTable.pop` and
+  `ProducerTable.set/delete`, plus `ConsumerTable` for ASIC GETRESPONSE
+  and async notification channels, and `NotificationProducer` for APPL response.
+- `src/swss/vlan_table/syncd.py`: `ConsumerTable.pop`, `NotificationProducer` for
+  async notifications, and `ProducerTable` for sairedis GETRESPONSE.
+- `src/swss/common/db_logging.py`: structured logs and verification markers.
+- `src/swss/common/select_loop.py`: common `Select` loop dispatch by selectable fd.
 
 Component/API mapping:
 
@@ -219,9 +223,12 @@ Component/API mapping:
 | `vlanmgrd.py` | `Table.get` | Replays existing `CONFIG_DB` config in one-shot mode. |
 | `vlanmgrd.py` | `SubscriberStateTable.pop` | Reads later `CONFIG_DB` changes in watch mode. |
 | `vlanmgrd.py` | `ProducerStateTable.set/delete` | Writes APPL pending state. |
+| `vlanmgrd.py` | `NotificationConsumer.pop` | Reads `APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL` from `APPL_STATE_DB`. |
 | `portorch.py` | `ConsumerStateTable.pop` | Materializes/deletes final `APPL_DB VLAN_TABLE:Vlan100`. |
 | `portorch.py` | `ProducerTable.set/delete` | Enqueues ordered ASIC operations. |
-| `portorch.py` | `NotificationConsumer.pop` | Reads syncd SAI responses and async `ASIC_DB:NOTIFICATIONS`. |
+| `portorch.py` | `NotificationProducer.send` | Propagates ASIC result to `APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL`. |
+| `portorch.py` | `ConsumerTable.pop` | Reads syncd `ASIC_DB GETRESPONSE` entries. |
+| `portorch.py` | `NotificationConsumer.pop` | Reads async `ASIC_DB:NOTIFICATIONS`. |
 | `portorch.py` | `Table.set` | Converts async port notifications into `STATE_DB PORT_TABLE|Ethernet0`. |
 | `syncd.py` | `ConsumerTable.pop` | Materializes/deletes final `ASIC_DB` table content. |
 | `syncd.py` | `NotificationProducer.send` | Sends SAI operation responses and async port notifications. |
@@ -290,7 +297,7 @@ Custom table flow:
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose up -d database
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/custom_tables/config_to_appl_bridge.py --key demo --watch
+  src/swss/custom_tables/config_to_appl_bridge.py --key demo --watch
 ```
 
 In another terminal:
@@ -298,7 +305,7 @@ In another terminal:
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
+  src/swss/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
 VLAN flow, four terminals:
@@ -306,25 +313,25 @@ VLAN flow, four terminals:
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/syncd.py --vlan-id 100 --watch
+  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/portorch.py --vlan-id 100 --watch
+  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/vlanmgrd.py --vlan-id 100 --watch
+  src/swss/vlan_table/vlanmgrd.py --vlan-id 100 --watch
 ```
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/config_vlan_command.py add 100
+  src/swss/vlan_table/config_vlan_command.py add 100
 ```
 
 After verifying the add path, optionally test delete:
@@ -332,7 +339,7 @@ After verifying the add path, optionally test delete:
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/vlan_table/config_vlan_command.py del 100
+  src/swss/vlan_table/config_vlan_command.py del 100
 ```
 
 ### Method 2: Helper Scripts
@@ -431,8 +438,8 @@ docker exec database redis-cli -s /var/run/redis/redis.sock -n 1 HGETALL 'ASIC_S
 docker exec database redis-cli -s /var/run/redis/redis.sock -n 6 HGETALL 'PORT_TABLE|Ethernet0'
 ```
 
-`scripts/verify_vlan_flow.sh 100` clears DB 0, DB 1, DB 4, and DB 6, runs the
-full VLAN flow, verifies the SAI response channel, verifies the async
+`scripts/verify_vlan_flow.sh 100` clears DB 0, DB 1, DB 4, DB 6, and DB 14,
+runs the full VLAN flow, verifies the ASIC/APPL response channels, verifies the async
 `syncd -> PortsOrch -> STATE_DB -> vlanmgrd` notification path, prints DB state
 after each phase, captures raw Redis `MONITOR` output in
 `/tmp/swss_vlan_monitor_*.log`, and writes a filtered log to
@@ -456,8 +463,11 @@ ASIC_DB queue ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE:
 ASIC_DB final ASIC_STATE:SAI_OBJECT_TYPE_VLAN:oid:0x26000000000100:
   materialized by syncd.py ConsumerTable.pop
 
-ASIC_DB SAI_RESPONSE:
-  sent by syncd.py NotificationProducer and read by portorch.py NotificationConsumer
+ASIC_DB GETRESPONSE:
+  written by syncd.py ProducerTable.set and read by portorch.py ConsumerTable.pop
+
+APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL on APPL_STATE_DB:
+  sent by portorch.py NotificationProducer and read by vlanmgrd.py NotificationConsumer
 
 STATE_DB PORT_TABLE|Ethernet0:
   written by portorch.py after consuming syncd's ASIC_DB:NOTIFICATIONS event

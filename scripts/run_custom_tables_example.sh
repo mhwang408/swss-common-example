@@ -31,10 +31,10 @@ container_name="swss-common-example-custom-${component}-$$"
 
 case "$component" in
     producer)
-        target=(src/custom_tables/config_db_producer.py)
+        target=(src/swss/custom_tables/config_db_producer.py)
         ;;
     bridge)
-        target=(src/custom_tables/config_to_appl_bridge.py)
+        target=(src/swss/custom_tables/config_to_appl_bridge.py)
         ;;
     *)
         printf 'Unknown component: %s\n\n' "$component" >&2
