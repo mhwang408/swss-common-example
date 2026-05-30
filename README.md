@@ -15,8 +15,9 @@ The consolidated SONiC table-usage reference is
 Detailed local table/API notes are in
 [docs/sonic-swss-common-redis-tables.md](docs/sonic-swss-common-redis-tables.md).
 Chinese notes are available in
-[docs/sonic-swss-common-redis-tables-zh.md](docs/sonic-swss-common-redis-tables-zh.md)
-and [docs/config-sync-flow-in-SONiC-zh.md](docs/config-sync-flow-in-SONiC-zh.md).
+[docs/sonic-swss-common-redis-tables-zh.md](docs/sonic-swss-common-redis-tables-zh.md),
+[docs/config-sync-flow-in-SONiC-zh.md](docs/config-sync-flow-in-SONiC-zh.md),
+and [docs/sonic-swss-common-table-usage-in-SONiC-zh.md](docs/sonic-swss-common-table-usage-in-SONiC-zh.md).
 
 ## 1. sonic-swss-common Basics
 

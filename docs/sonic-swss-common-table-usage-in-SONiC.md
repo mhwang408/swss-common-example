@@ -37,9 +37,9 @@ ASIC_DB SAI request path
   consumer: syncd with ConsumerTable
 
 ASIC_DB SAI response path
-  response channel for sync SAI results
-  producer: syncd with NotificationProducer
-  consumer: sairedis client side with NotificationConsumer
+  ordered response queue for sync SAI results
+  producer: syncd with ProducerTable(ASIC_DB, "GETRESPONSE")
+  consumer: sairedis client side with ConsumerTable
 
 ASIC_DB async notification path
   unsolicited SAI/vendor events
@@ -141,6 +141,13 @@ orchagent / PortsOrch
 | SAI object request | orchagent through sairedis / `ProducerTable`-style ASIC_DB operation | `ASIC_DB:ASIC_STATE:SAI_OBJECT_TYPE_*` | syncd / `ConsumerTable` |
 | SAI sync response | syncd / `ProducerTable` | `ASIC_DB:GETRESPONSE` (key = SAI status, op = `getresponse`) | sairedis client side / `ConsumerTable` |
 
+Both SAI request and response are `ProducerTable` / `ConsumerTable` ordered
+queues — not pub/sub channels. The request goes through
+`ASIC_STATE:SAI_OBJECT_TYPE_*_KEY_VALUE_OP_QUEUE` and the response through
+`GETRESPONSE_KEY_VALUE_OP_QUEUE`. This is different from async notifications
+which use `NotificationProducer` / `NotificationConsumer` on a Redis pub/sub
+channel.
+
 The vendor SAI shared library does not serialize the Redis response. The split
 is:
 
@@ -183,7 +190,33 @@ Do not confuse these channels:
 | --- | --- |
 | `ASIC_DB:GETRESPONSE` | SAI request response from syncd to sairedis client (`ProducerTable` / `ConsumerTable`). |
 | `ASIC_DB:NOTIFICATIONS` | Unsolicited async SAI/vendor event from syncd to orchagent (`NotificationProducer` / `NotificationConsumer`). |
-| `APPL_DB_<table>_RESPONSE_CHANNEL` | Northbound orch response after APPL_DB intent processing (`NotificationProducer` / `NotificationConsumer`). |
+| `APPL_DB_<table>_RESPONSE_CHANNEL` on `APPL_STATE_DB` | Northbound orch response after APPL_DB intent processing (`NotificationProducer` / `NotificationConsumer`). |
+
+### Notification Channel Usage Summary
+
+All `NotificationProducer` / `NotificationConsumer` channels in SONiC:
+
+| Channel | DB | Producer | Consumer | Purpose |
+| --- | --- | --- | --- | --- |
+| `NOTIFICATIONS` | `ASIC_DB` | syncd | orchagent (`PortsOrch`, `FdbOrch`, `BfdOrch`, `TwampOrch`, `IcmpOrch`, `MACsecOrch`, `DashHaOrch`, `DashHaFlowOrch`, `PfcWdOrch`, `HFTelOrch`, `P4Orch`) | Async SAI events (port state, FDB, BFD, etc.) |
+| `APPL_DB_<table>_RESPONSE_CHANNEL` | `APPL_STATE_DB` | orchagent `ResponsePublisher` | mgrd/sync daemons (e.g. `fpmsyncd`) | Orch response after APPL_DB intent processing |
+| `RESTARTCHECK` | `STATE_DB` | `orchagent_restart_check` | `SwitchOrch` | Warm restart readiness query |
+| `RESTARTCHECKREPLY` | `STATE_DB` | `SwitchOrch` | `orchagent_restart_check` | Warm restart readiness reply |
+| `SETTIMEOUTNAT` | `APPL_DB` | `NatOrch` | `natmgrd` | NAT entry timeout notification |
+| `FLUSHNATENTRIES` | `APPL_DB` | `natmgrd` | `NatOrch` | NAT flush request |
+| `FLUSHFDBREQUEST` | `APPL_DB` | external | `FdbOrch` | FDB flush request |
+| `FLUSHNATSTATISTICS` | `APPL_DB` | external | `NatOrch` | NAT stats flush |
+| `NAT_DB_CLEANUP_NOTIFICATION` | `APPL_DB` | external | `NatOrch` | NAT DB cleanup |
+| `WM_CLEAR` | `APPL_DB` | CLI/test | `WatermarkOrch` | Clear watermark counters |
+
+The two main patterns are:
+
+1. **Async ASIC events**: syncd → `ASIC_DB:NOTIFICATIONS` → orchagent (all orch
+   consumers share the same channel, dispatch by event type).
+2. **Northbound APPL response**: orchagent `ResponsePublisher` →
+   `APPL_DB_<table>_RESPONSE_CHANNEL` on `APPL_STATE_DB` → mgrd/sync daemon.
+
+The rest are ad-hoc control channels for specific features.
 
 ## Northbound State And Responses
 
@@ -195,10 +228,15 @@ operations.
 | --- | --- | --- | --- |
 | Operational state | orch / `Table` | `STATE_DB:<table>\|<key>` | mgrd/sync daemon / `Table` or `SubscriberStateTable` |
 | Applied APPL intent state | orch `ResponsePublisher` / `Table` | `APPL_STATE_DB:<table>:<key>` | mgrd/sync daemon / `Table` |
-| APPL intent response | orch `ResponsePublisher` / `NotificationProducer` | `APPL_DB_<table>_RESPONSE_CHANNEL` | mgrd/sync daemon / `NotificationConsumer` |
+| APPL intent response | orch `ResponsePublisher` / `NotificationProducer` | `APPL_DB_<table>_RESPONSE_CHANNEL` on `APPL_STATE_DB` | mgrd/sync daemon / `NotificationConsumer` |
 
-`ResponsePublisher` is an orchagent helper. Its DB write side is `Table`; its
-response channel side is `NotificationProducer`.
+`ResponsePublisher` is an orchagent helper that connects to `APPL_STATE_DB`.
+Its DB write side is `Table` (writes applied state to `APPL_STATE_DB:<table>:<key>`);
+its response channel side is `NotificationProducer` (sends on
+`APPL_DB_<table>_RESPONSE_CHANNEL`, also on `APPL_STATE_DB`).
+
+Note: P4Orch is the exception — it constructs `ResponsePublisher` with
+`"APPL_DB"`, so both its table writes and response channel go through `APPL_DB`.
 
 ## Route Flow Counters
 
@@ -282,7 +320,7 @@ syncd flex counter logic
 | syncd SAI response to orch | syncd / `ProducerTable` | `ASIC_DB:GETRESPONSE` | sairedis client side / `ConsumerTable` |
 | syncd async event to orch | syncd / `NotificationProducer` | `ASIC_DB:NOTIFICATIONS` | orch / `NotificationConsumer` |
 | orch state to mgrd | orch / `Table` | `STATE_DB:*` | mgrd / `Table` or `SubscriberStateTable` |
-| orch APPL response to producer | orch / `NotificationProducer` | `APPL_DB_<table>_RESPONSE_CHANNEL` | mgrd/sync daemon / `NotificationConsumer` |
+| orch APPL response to producer | orch `ResponsePublisher` / `NotificationProducer` | `APPL_DB_<table>_RESPONSE_CHANNEL` on `APPL_STATE_DB` | mgrd/sync daemon / `NotificationConsumer` |
 | route flow counter enable | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE\|FLOW_CNT_ROUTE` | `FlexCounterOrch` / `Consumer` backed by `SubscriberStateTable` |
 | route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE\|<vrf>\|<prefix>` | `FlowCounterRouteOrch` / `Consumer` backed by `SubscriberStateTable` |
 | route polling setup, traditional mode | `FlowCounterRouteOrch` via `FlexCounterManager` / `ProducerTable` | `FLEX_COUNTER_DB:FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` | syncd flex counter logic |
