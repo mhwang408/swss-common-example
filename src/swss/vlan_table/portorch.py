@@ -170,8 +170,6 @@ class VlanFlowOrch:
 
         if self.args.wait_sai_response:
             self._requests_by_asic_key[request.asic_key] = request
-        elif not self.args.watch:
-            return SelectLoop.STOP
         return None
 
     def _build_request(
@@ -243,9 +241,6 @@ class VlanFlowOrch:
         request.move_to(VlanRequestState.ASIC_RESPONDED)
         self._publish_appl_response(request, sai_op, field_values)
         request.move_to(VlanRequestState.APPL_RESPONDED)
-
-        if not self.args.watch:
-            return SelectLoop.STOP
         return None
 
     def _pop_sai_response(
@@ -328,10 +323,6 @@ def main() -> None:
     parser.add_argument(
         "--wait-sai-response", action="store_true",
         help="wait for syncd's ASIC DB response after enqueueing the SAI request",
-    )
-    parser.add_argument(
-        "--watch", action="store_true",
-        help="continue processing instead of exiting after one event",
     )
     parser.add_argument("--db-config", help="path to database_config.json")
     args = parser.parse_args()

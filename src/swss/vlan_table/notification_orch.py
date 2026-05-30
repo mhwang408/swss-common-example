@@ -68,8 +68,6 @@ class NotificationFlowOrch:
 
         if op != NOTIFICATION_PORT_STATE_CHANGE:
             print("PortsOrch: ignoring async notification %s %s" % (op, data))
-            if not self.args.watch:
-                return SelectLoop.STOP
             return None
 
         fields = {field: value for field, value in field_values}
@@ -88,7 +86,5 @@ class NotificationFlowOrch:
         ))
         for field, value in values.items():
             print("  %s=%s" % (field, value))
-
-        if not self.args.watch:
-            return SelectLoop.STOP
+        return None
         return None

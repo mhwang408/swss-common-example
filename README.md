@@ -332,32 +332,21 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
   src/swss/custom_tables/config_db_producer.py --key demo --enabled true --interval 10
 ```
 
-VLAN flow, four terminals:
+VLAN flow, two terminals:
 
-> **Startup order matters.** Consumers must be running before their upstream
-> producer writes, because `ConsumerStateTable` and `ConsumerTable` are
-> triggered by Redis PUBLISH notifications emitted at write time.  If a
-> consumer starts after the notification was already sent, it will block
-> forever.  The correct order is: **syncd → portorch → vlanmgrd → config
-> command**.
+> **Startup order matters.** The daemon (syncd + portorch + vlanmgrd) must be
+> running before `config_vlan_command` writes, because consumers are triggered
+> by Redis PUBLISH notifications emitted at write time.
 
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/syncd.py --vlan-id 100 --watch
-```
+Terminal 1 — start the daemon (runs syncd + portorch + vlanmgrd in one process):
 
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/portorch.py --vlan-id 100 --watch
+  src/swss/vlan_table/daemon.py --vlan-id 100
 ```
 
-```bash
-cd /home/ubuntu/swss-common-example
-UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
-  src/swss/vlan_table/vlanmgrd.py --vlan-id 100
-```
+Terminal 2 — trigger the flow:
 
 ```bash
 cd /home/ubuntu/swss-common-example
@@ -393,21 +382,11 @@ cd /home/ubuntu/swss-common-example
 scripts/run_custom_tables_example.sh producer --key demo --enabled true --interval 10
 ```
 
-VLAN flow, four terminals:
+VLAN flow, two terminals:
 
 ```bash
 cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
-```
-
-```bash
-cd /home/ubuntu/swss-common-example
-scripts/run_vlan_table_example.sh mgrd --vlan-id 100
+scripts/run_vlan_table_example.sh daemon --vlan-id 100
 ```
 
 ```bash

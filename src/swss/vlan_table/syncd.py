@@ -121,9 +121,6 @@ def run_asic_consumer(args: argparse.Namespace) -> None:
         print("syncd: queued %s %s %s for %s" % (
             ASIC_DB, ASIC_GET_RESPONSE_TABLE_NAME, ASIC_GET_RESPONSE_OP, key,
         ))
-
-        if not args.watch:
-            return SelectLoop.STOP
         return None
 
     select_loop.add(asic_consumer, handle_asic_update)
@@ -145,10 +142,6 @@ def main() -> None:
     parser.add_argument(
         "--send-port-notification", action="store_true",
         help="send one ASIC_DB:NOTIFICATIONS port_state_change event and exit",
-    )
-    parser.add_argument(
-        "--watch", action="store_true",
-        help="continue processing instead of exiting after one event",
     )
     parser.add_argument("--db-config", help="path to database_config.json")
     args = parser.parse_args()

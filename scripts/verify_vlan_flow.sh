@@ -81,31 +81,19 @@ run_runner src/swss/vlan_table/config_vlan_command.py add "$vlan_id"
 show_redis "CONFIG_DB final VLAN|${vlan_key}" -n 4 HGETALL "VLAN|${vlan_key}"
 show_redis "APPL_DB final before consumers start, should be empty" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
 
-show_cmd "2. Start consumers (syncd, portorch, vlanmgrd response listener) then trigger vlanmgrd"
-syncd_name="swss-common-example-verify-syncd-$$"
-run_runner_bg "$syncd_name" src/swss/vlan_table/syncd.py --vlan-id "$vlan_id"
-portorch_name="swss-common-example-verify-portorch-$$"
-run_runner_bg "$portorch_name" src/swss/vlan_table/portorch.py --vlan-id "$vlan_id" --wait-sai-response
-vlanmgrd_response_name="swss-common-example-verify-vlanmgrd-response-$$"
-run_runner_bg "$vlanmgrd_response_name" src/swss/vlan_table/vlanmgrd.py --vlan-id "$vlan_id" --wait-appl-response --watch
+show_cmd "2. Start daemon (syncd + portorch + vlanmgrd in one process)"
+daemon_name="swss-common-example-verify-daemon-$$"
+run_runner_bg "$daemon_name" src/swss/vlan_table/daemon.py --vlan-id "$vlan_id"
 sleep 1
 
-show_cmd "3. vlanmgrd reads CONFIG_DB and publishes APPL_DB (triggers portorch -> syncd chain)"
-vlanmgrd_name="swss-common-example-verify-vlanmgrd-$$"
-run_runner_bg "$vlanmgrd_name" src/swss/vlan_table/vlanmgrd.py --vlan-id "$vlan_id"
+show_cmd "3. config command triggers the full chain via daemon"
+run_runner src/swss/vlan_table/config_vlan_command.py add "$vlan_id"
 sleep 1
 show_redis "APPL_DB final after portorch consumed" -n 0 HGETALL "VLAN_TABLE:${vlan_key}"
-show_redis "APPL_DB pending key set after portorch, should be empty" -n 0 SMEMBERS "VLAN_TABLE_KEY_SET"
 show_redis "ASIC_DB final after syncd" -n 1 HGETALL "ASIC_STATE:SAI_OBJECT_TYPE_VLAN:${asic_key}"
 show_redis "ASIC_DB queue after syncd, should be empty" -n 1 LRANGE "ASIC_STATE:SAI_OBJECT_TYPE_VLAN_KEY_VALUE_OP_QUEUE" 0 -1
 
-show_cmd "4. Async notification: syncd -> ASIC_DB:NOTIFICATIONS -> portorch -> STATE_DB -> vlanmgrd"
-vlanmgrd_state_name="swss-common-example-verify-vlanmgrd-state-$$"
-run_runner_bg "$vlanmgrd_state_name" src/swss/vlan_table/vlanmgrd.py --state-port "$port_name" --watch
-sleep 0.5
-portorch_notify_name="swss-common-example-verify-portorch-notify-$$"
-run_runner_bg "$portorch_notify_name" src/swss/vlan_table/portorch.py --notification-only --port "$port_name"
-sleep 0.5
+show_cmd "4. Async notification: syncd -> daemon (portorch) -> STATE_DB"
 run_runner src/swss/vlan_table/syncd.py --send-port-notification --port "$port_name" --oper-status ok
 sleep 0.5
 show_redis "STATE_DB port state after async notification" -n 6 HGETALL "PORT_TABLE|${port_name}"

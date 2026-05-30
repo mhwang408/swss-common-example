@@ -12,6 +12,7 @@ container_name="swss-common-example-vlan-${component:-run}-$$"
 usage() {
     cat <<'EOF'
 Usage:
+  scripts/run_vlan_table_example.sh daemon [args...]
   scripts/run_vlan_table_example.sh config-add [vlan_id] [args...]
   scripts/run_vlan_table_example.sh config-del [vlan_id] [args...]
   scripts/run_vlan_table_example.sh mgrd [args...]
@@ -20,10 +21,8 @@ Usage:
   scripts/run_vlan_table_example.sh verify [vlan_id]
 
 Examples:
+  scripts/run_vlan_table_example.sh daemon --vlan-id 100
   scripts/run_vlan_table_example.sh config-add 100
-  scripts/run_vlan_table_example.sh mgrd --vlan-id 100 --watch
-  scripts/run_vlan_table_example.sh portorch --vlan-id 100 --watch
-  scripts/run_vlan_table_example.sh syncd --vlan-id 100 --watch
   scripts/run_vlan_table_example.sh verify 100
 EOF
 }
@@ -37,6 +36,9 @@ shift
 container_name="swss-common-example-vlan-${component}-$$"
 
 case "$component" in
+    daemon)
+        target=(src/swss/vlan_table/daemon.py)
+        ;;
     config-add)
         vlan_id="${1:-100}"
         if [[ $# -gt 0 ]]; then
