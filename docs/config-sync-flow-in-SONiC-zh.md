@@ -29,7 +29,7 @@ library，而且必須選對 table family。
 
 | Table family | 本例用途 |
 | --- | --- |
-| `Table` | config command 直接 materialize `CONFIG_DB VLAN|Vlan100`。 |
+| `Table` | config command 直接 materialize `CONFIG_DB VLAN\|Vlan100`。 |
 | `SubscriberStateTable` | `vlanmgrd` watch `CONFIG_DB VLAN` updates。 |
 | `ProducerStateTable` / `ConsumerStateTable` | `vlanmgrd` 寫 APPL pending state，`PortsOrch` consume 並 materialize final APPL_DB hash。 |
 | `ProducerTable` / `ConsumerTable` | `PortsOrch` enqueue ordered ASIC operation，`syncd` consume 並 materialize final ASIC_DB hash。 |
@@ -78,7 +78,7 @@ syncd.py async notification
 
 | Step | Component | Source | API | Output | 為什麼用這個 API |
 | --- | --- | --- | --- | --- | --- |
-| 1 | config command | user intent | `Table.set` | `CONFIG_DB VLAN|Vlan100` | config 是 durable desired config，直接寫 hash；不需要 queue。 |
+| 1 | config command | user intent | `Table.set` | `CONFIG_DB VLAN\|Vlan100` | config 是 durable desired config，直接寫 hash；不需要 queue。 |
 | 2 | vlanmgrd | `CONFIG_DB VLAN` | `Table.get` / `SubscriberStateTable.pop` | 讀到 `Vlan100 SET` | 啟動時可 replay 既有 config；watch 模式可訂閱後續 config change。 |
 | 3 | vlanmgrd | config event | `ProducerStateTable.set` | `_VLAN_TABLE:Vlan100` + `VLAN_TABLE_KEY_SET` | APPL_DB 是 desired state；同 key 多次更新可 coalesce，只需要最新狀態。 |
 | 4 | PortsOrch | APPL_DB pending | `ConsumerStateTable.pop` | `VLAN_TABLE:Vlan100` | APPL table owner 消費 pending state，並 materialize final APPL_DB hash。 |
@@ -87,7 +87,7 @@ syncd.py async notification
 | 7 | syncd | SAI operation result | `ProducerTable.set` | `ASIC_DB GETRESPONSE` with op `getresponse` | SAI create/remove 的同步結果回給 requester；這是 sairedis/syncd 的實際 Redis sync response path。 |
 | 8 | PortsOrch | SAI operation result | `NotificationProducer.send` | `APPL_DB_VLAN_TABLE_RESPONSE_CHANNEL` on `APPL_STATE_DB` | `PortsOrch` 把 ASIC result propagate 回 vlanmgrd/northbound producer。 |
 | 9 | syncd | ASIC async event | `NotificationProducer.send` | ASIC_DB `NOTIFICATIONS` channel | port state change 這類 async event 不是 table operation queue。 |
-| 10 | PortsOrch | ASIC async notification | `NotificationConsumer.pop` + `Table.set` | `STATE_DB PORT_TABLE|Ethernet0` | `PortsOrch` 把 syncd notification 轉成可被 mgrd/其他 daemon 讀取的 state table。 |
+| 10 | PortsOrch | ASIC async notification | `NotificationConsumer.pop` + `Table.set` | `STATE_DB PORT_TABLE\|Ethernet0` | `PortsOrch` 把 syncd notification 轉成可被 mgrd/其他 daemon 讀取的 state table。 |
 
 最重要的結論：
 
@@ -794,8 +794,8 @@ counter 則展示 counter 類功能常見的另一種資料流。重點是：
 
 | Flow | Producer / Table | DB / Table | Consumer / Table |
 | --- | --- | --- | --- |
-| Enable route flow counter | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE|FLOW_CNT_ROUTE` | `FlexCounterOrch` / orch `Consumer` backed by `SubscriberStateTable` |
-| Route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE|<vrf>|<prefix>` | `FlowCounterRouteOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Enable route flow counter | CLI / `Table` | `CONFIG_DB:FLEX_COUNTER_TABLE\|FLOW_CNT_ROUTE` | `FlexCounterOrch` / orch `Consumer` backed by `SubscriberStateTable` |
+| Route pattern config | CLI / `Table` | `CONFIG_DB:FLOW_COUNTER_ROUTE_PATTERN_TABLE\|<vrf>\|<prefix>` | `FlowCounterRouteOrch` / orch `Consumer` backed by `SubscriberStateTable` |
 | Polling setup, traditional mode | `FlowCounterRouteOrch` via `FlexCounterManager` / `ProducerTable` | `FLEX_COUNTER_DB:FLEX_COUNTER_TABLE:ROUTE_FLOW_COUNTER:<counter_oid>` field `FLOW_COUNTER_ID_LIST` | `syncd` flex counter logic |
 | Route-to-counter mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP` | CLI/display / `Table` or direct Redis hash read |
 | Route-to-pattern mapping | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` or direct Redis hash read |
