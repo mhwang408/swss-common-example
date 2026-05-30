@@ -12,12 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.custom_schema import ASIC_NOTIFICATIONS_CHANNEL_NAME
 from common.custom_schema import ASIC_GET_RESPONSE_OP
 from common.custom_schema import ASIC_GET_RESPONSE_TABLE_NAME
-from common.custom_schema import ASIC_VLAN_TABLE_NAME as ASIC_TABLE
+from common.custom_schema import ASIC_VLAN_TABLE_NAME
 from common.custom_schema import asic_vlan_key
-from common.db_logging import add_log_argument
-from common.db_logging import configure_logger
 from common.db_logging import emit_redis_marker
-from common.db_logging import log_table_event
 from common.select_loop import SelectLoop
 from common.swss import field_value_pairs
 from common.swss import load_db_config
@@ -45,9 +42,7 @@ def main():
         "--db-config",
         help="path to database_config.json; useful when running Redis in a local host container",
     )
-    add_log_argument(parser)
     args = parser.parse_args()
-    logger, _ = configure_logger(args.log_file)
 
     load_db_config(args.db_config)
 
@@ -71,45 +66,20 @@ def main():
         ))
         return
 
-    asic_consumer = swsscommon.ConsumerTable(asic_db, ASIC_TABLE)
+    asic_consumer = swsscommon.ConsumerTable(asic_db, ASIC_VLAN_TABLE_NAME)
     response_producer = swsscommon.ProducerTable(asic_db, ASIC_GET_RESPONSE_TABLE_NAME)
     select_loop = SelectLoop(swsscommon)
 
-    print("syncd: waiting for ASIC_DB %s:%s updates" % (ASIC_TABLE, key_filter))
+    print("syncd: waiting for ASIC_DB %s:%s updates" % (ASIC_VLAN_TABLE_NAME, key_filter))
 
     def handle_asic_update(_selectable):
-        emit_redis_marker(asic_db, "syncd", "before", "ConsumerTable.pop", "ASIC_DB", ASIC_TABLE, key_filter)
+        emit_redis_marker(asic_db, "syncd", "before", "ConsumerTable.pop", "ASIC_DB", ASIC_VLAN_TABLE_NAME, key_filter)
         key, op, field_values = asic_consumer.pop()
-        emit_redis_marker(asic_db, "syncd", "after", "ConsumerTable.pop", "ASIC_DB", ASIC_TABLE, key_filter)
+        emit_redis_marker(asic_db, "syncd", "after", "ConsumerTable.pop", "ASIC_DB", ASIC_VLAN_TABLE_NAME, key_filter)
         if key != key_filter:
             return None
 
-        log_table_event(
-            logger,
-            "syncd",
-            "ConsumerTable.pop",
-            "READ",
-            "ASIC_DB",
-            ASIC_TABLE,
-            key,
-            op=op,
-            fields=field_values,
-            note="ConsumerTable pop materializes ASIC_DB final hash before fake ASIC write",
-        )
-        log_table_event(
-            logger,
-            "syncd",
-            "fake_asic_write",
-            "WRITE",
-            "ASIC",
-            ASIC_TABLE,
-            key,
-            op=op,
-            fields=field_values,
-            note="No real ASIC access in this example",
-        )
-
-        print("syncd: ASIC_DB update %s:%s %s" % (ASIC_TABLE, key, op))
+        print("syncd: ASIC_DB update %s:%s %s" % (ASIC_VLAN_TABLE_NAME, key, op))
         for field, value in field_values:
             print("  %s=%s" % (field, value))
         print("syncd: pretend write ASIC %s %s" % (op, key))

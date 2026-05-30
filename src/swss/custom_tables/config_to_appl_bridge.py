@@ -15,8 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.custom_schema import (
-    EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME as CONFIG_TABLE,
-    EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME as APPL_TABLE,
+    EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME,
+    EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
 )
 from common.select_loop import SelectLoop
 from common.swss import field_value_pairs
@@ -29,16 +29,16 @@ def publish_set(appl_table, key, field_values):
     appl_values = {
         "admin_status": "up" if config.get("enabled", "false").lower() == "true" else "down",
         "poll_interval": config.get("interval", "0"),
-        "source_table": CONFIG_TABLE,
+        "source_table": EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
         "source_key": key,
         "published_at": str(int(time.time())),
     }
     appl_table.set(key, field_value_pairs(appl_values))
 
     print("Received CONFIG_DB %s|%s SET and published APPL_DB %s:%s SET" % (
-        CONFIG_TABLE,
+        EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
         key,
-        APPL_TABLE,
+        EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME,
         key,
     ))
     for field, value in appl_values.items():
@@ -48,9 +48,9 @@ def publish_set(appl_table, key, field_values):
 def publish_delete(appl_table, key):
     appl_table.delete(key)
     print("Received CONFIG_DB %s|%s DEL and published APPL_DB %s:%s DEL" % (
-        CONFIG_TABLE,
+        EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME,
         key,
-        APPL_TABLE,
+        EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME,
         key,
     ))
 
@@ -75,11 +75,11 @@ def main():
 
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
     appl_db = swsscommon.DBConnector("APPL_DB", 0, False)
-    config_subscriber = swsscommon.SubscriberStateTable(config_db, CONFIG_TABLE)
-    appl_table = swsscommon.ProducerStateTable(appl_db, APPL_TABLE)
+    config_subscriber = swsscommon.SubscriberStateTable(config_db, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME)
+    appl_table = swsscommon.ProducerStateTable(appl_db, EXAMPLE_APP_CUSTOM_APPL_TABLE_NAME)
     select_loop = SelectLoop(swsscommon)
 
-    print("Waiting for CONFIG_DB %s|%s updates" % (CONFIG_TABLE, args.key))
+    print("Waiting for CONFIG_DB %s|%s updates" % (EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, args.key))
 
     def handle_config_update(_selectable):
         key, op, field_values = config_subscriber.pop()
@@ -91,7 +91,7 @@ def main():
         elif op == "DEL":
             publish_delete(appl_table, key)
         else:
-            print("Ignoring CONFIG_DB %s|%s op %s" % (CONFIG_TABLE, key, op))
+            print("Ignoring CONFIG_DB %s|%s op %s" % (EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, key, op))
 
         if not args.watch:
             return SelectLoop.STOP

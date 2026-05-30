@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common.custom_schema import EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME as CONFIG_TABLE
+from common.custom_schema import EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME
 from common.swss import field_value_pairs
 from common.swss import load_db_config
 from common.swss import swsscommon
@@ -34,7 +34,7 @@ def main():
     load_db_config(args.db_config)
 
     config_db = swsscommon.DBConnector("CONFIG_DB", 0, False)
-    config_table = swsscommon.Table(config_db, CONFIG_TABLE)
+    config_table = swsscommon.Table(config_db, EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME)
 
     values = {
         "enabled": args.enabled,
@@ -44,9 +44,9 @@ def main():
     config_table.set(args.key, field_value_pairs(values))
 
     print("Wrote CONFIG_DB entry")
-    print("  table: %s" % CONFIG_TABLE)
+    print("  table: %s" % EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME)
     print("  key: %s" % args.key)
-    print("  redis key: %s|%s" % (CONFIG_TABLE, args.key))
+    print("  redis key: %s|%s" % (EXAMPLE_CFG_CUSTOM_CONFIG_TABLE_NAME, args.key))
     for field, value in values.items():
         print("  %s=%s" % (field, value))
 
