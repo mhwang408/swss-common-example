@@ -212,8 +212,25 @@ Files:
   and async notification channels, and `NotificationProducer` for APPL response.
 - `src/swss/vlan_table/syncd.py`: `ConsumerTable.pop`, `NotificationProducer` for
   async notifications, and `ProducerTable` for sairedis GETRESPONSE.
-- `src/swss/common/db_logging.py`: structured logs and verification markers.
+- `src/swss/common/db_logging.py`: Redis verification markers and a
+  `marked_redis_operation` context manager for grouping Redis `MONITOR` output
+  around each table API call.
 - `src/swss/common/select_loop.py`: common `Select` loop dispatch by selectable fd.
+
+`portorch.py` is the only VLAN example script organized as a small class. It has
+the most shared state: APPL consumer, ASIC producer, GETRESPONSE consumer, APPL
+response producer, async notification consumer, and in-flight VLAN requests.
+`PortsOrchDemo` keeps those resources together while separating the flows into
+`handle_vlan_update`, `handle_sai_response`, and `handle_notification`.
+
+The VLAN request/response path uses a small state object:
+
+```text
+APPL_RECEIVED -> ASIC_SENT -> ASIC_RESPONDED -> APPL_RESPONDED
+```
+
+The async `ASIC_DB:NOTIFICATIONS -> STATE_DB` path remains a plain event handler
+because it is an independent notification, not a request lifecycle.
 
 Component/API mapping:
 
@@ -444,6 +461,11 @@ runs the full VLAN flow, verifies the ASIC/APPL response channels, verifies the 
 after each phase, captures raw Redis `MONITOR` output in
 `/tmp/swss_vlan_monitor_*.log`, and writes a filtered log to
 `/tmp/swss_vlan_pretty_*.log`.
+
+The pretty log is grouped by `__VERIFY_MARKER` entries emitted immediately before
+and after each table API call. In `portorch.py`, those markers are emitted through
+`marked_redis_operation(...)`, so the code reads as one table operation while the
+monitor output still shows the exact Redis commands that occurred inside it.
 
 The expected materialization result is:
 

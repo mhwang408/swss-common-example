@@ -563,6 +563,24 @@ The implementation maps each SONiC component role to a small Python script:
 - `src/swss/vlan_table/syncd.py` consumes ASIC operations, logs a fake ASIC write,
   writes sairedis GETRESPONSE entries, and can emit async port notifications.
 
+`portorch.py` is intentionally object-oriented while the smaller scripts remain
+function-based. `PortsOrchDemo` owns the APPL/ASIC DB connections, table objects,
+GETRESPONSE consumer, APPL response producer, async notification consumer, and
+in-flight VLAN request map. This keeps the three flows distinct:
+
+- `handle_vlan_update`: `APPL_DB VLAN_TABLE` -> `ASIC_DB` operation queue.
+- `handle_sai_response`: `ASIC_DB GETRESPONSE` -> APPL response channel.
+- `handle_notification`: `ASIC_DB:NOTIFICATIONS` -> `STATE_DB PORT_TABLE`.
+
+Only the VLAN request/response path has explicit state:
+
+```text
+APPL_RECEIVED -> ASIC_SENT -> ASIC_RESPONDED -> APPL_RESPONDED
+```
+
+The async notification path is not part of that state machine because it is not a
+request lifecycle.
+
 ## Running The Examples
 
 ### Test Environment

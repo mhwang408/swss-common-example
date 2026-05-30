@@ -851,6 +851,30 @@ config command -> CONFIG_DB check -> vlanmgrd -> APPL_DB check
 /tmp/swss_vlan_pretty_*.log   # 依 __VERIFY_MARKER 分組的 pretty log
 ```
 
+目前範例用 `common.db_logging.marked_redis_operation(...)` 產生 table API call
+前後 marker。這讓 pretty log 可以清楚看出 Redis operation 是發生在
+`Table.set()`、`ConsumerStateTable.pop()`、`ProducerTable.set()` 或
+`ConsumerTable.pop()` 的哪個 call 內，同時避免在主流程散落大量 before/after
+marker code。
+
+`portorch.py` 另外用 `PortsOrchDemo` class 整理多條 flow，因為它同時處理：
+
+- APPL_DB `VLAN_TABLE` consumer。
+- ASIC_DB `ASIC_STATE:*` producer。
+- ASIC_DB `GETRESPONSE` consumer。
+- APPL response channel producer。
+- ASIC_DB `NOTIFICATIONS` consumer。
+- STATE_DB `PORT_TABLE` writer。
+
+VLAN request/response lifecycle 用小型狀態表示：
+
+```text
+APPL_RECEIVED -> ASIC_SENT -> ASIC_RESPONDED -> APPL_RESPONDED
+```
+
+async notification 則維持普通 event handler，因為它不是 request/response
+lifecycle。
+
 檢查 Redis：
 
 ```bash

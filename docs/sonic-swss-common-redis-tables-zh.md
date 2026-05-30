@@ -538,6 +538,24 @@ syncd
 - `src/swss/vlan_table/portorch.py` 模擬真實 `PortsOrch`：consume APPL pending state、enqueue ASIC operation、讀 sairedis GETRESPONSE、publish APPL response、處理 async ASIC notification。
 - `src/swss/vlan_table/syncd.py` consume ASIC operation、寫入 fake sairedis GETRESPONSE，也可送出 async port notification。
 
+`portorch.py` 是 VLAN 範例裡唯一刻意用小型物件導向整理的 script。原因是
+它同時持有 APPL/ASIC DB connection、table object、GETRESPONSE consumer、APPL
+response producer、async notification consumer，以及 in-flight VLAN request map。
+`PortsOrchDemo` 把這些共享狀態集中起來，並把三條 flow 分開：
+
+- `handle_vlan_update`：`APPL_DB VLAN_TABLE` -> `ASIC_DB` operation queue。
+- `handle_sai_response`：`ASIC_DB GETRESPONSE` -> APPL response channel。
+- `handle_notification`：`ASIC_DB:NOTIFICATIONS` -> `STATE_DB PORT_TABLE`。
+
+只有 VLAN request/response path 有明確狀態：
+
+```text
+APPL_RECEIVED -> ASIC_SENT -> ASIC_RESPONDED -> APPL_RESPONDED
+```
+
+async notification path 不是 request lifecycle，所以維持普通 event handler，
+沒有硬塞進同一個 state machine。
+
 ## Running The Examples
 
 ### Test environment
