@@ -334,6 +334,13 @@ UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
 
 VLAN flow, four terminals:
 
+> **Startup order matters.** Consumers must be running before their upstream
+> producer writes, because `ConsumerStateTable` and `ConsumerTable` are
+> triggered by Redis PUBLISH notifications emitted at write time.  If a
+> consumer starts after the notification was already sent, it will block
+> forever.  The correct order is: **syncd → portorch → vlanmgrd → config
+> command**.
+
 ```bash
 cd /home/ubuntu/swss-common-example
 UID=$(id -u) GID=$(id -g) docker compose run --rm -T runner \
