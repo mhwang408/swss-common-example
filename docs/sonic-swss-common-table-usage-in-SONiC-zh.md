@@ -317,6 +317,120 @@ syncd flex counter logic
 | counter mappings | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP`, `COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` 或直接 Redis read |
 | counter stats | syncd flex counter polling / `Table`-style hash write | `COUNTERS_DB:COUNTERS:<counter_oid>` | CLI/display / `Table` 或直接 Redis read |
 
+## OrchAgent 狀態回報機制
+
+orchagent 處理 intent 或接收 event 之後，可能透過以下機制回報結果。依觸發來源
+和回報目的分為三大類。
+
+```text
+OrchAgent 狀態回報
+├── 1. Synchronous/Reactive（APPL_DB intent → SAI → 回報結果）
+│   ├── ResponsePublisher → APPL_STATE_DB + response channel
+│   ├── DASH Result Helper → DPU_APPL_STATE_DB
+│   ├── STATE_DB Table → STATE_DB（object lifecycle 宣告）
+│   └── Silent（僅 log）
+│
+├── 2. Asynchronous/Proactive（ASIC_DB:NOTIFICATIONS → handler → state 更新）
+│   └── STATE_DB Table → STATE_DB（runtime operational state）
+│
+└── 3. Ad-hoc Control Signaling（跨進程協調）
+    └── NotificationProducer → 特定 channel
+```
+
+### 類別 1：Synchronous/Reactive
+
+由 APPL_DB（或 CONFIG_DB）intent 經 `ConsumerStateTable` 觸發。orch 執行 SAI
+API call，收到同步 return status 後回報。
+
+**1a. ResponsePublisher** — 雙通道：`APPL_DB_<table>_RESPONSE_CHANNEL` notification
++ `APPL_STATE_DB` 持久 state。從不在 async notification handler 中呼叫。
+
+| Orchagent | Table / 用途 |
+| --- | --- |
+| `RouteOrch` | `APP_ROUTE_TABLE_NAME` — buffered，`m_directDbWrite = true` |
+| `BufferOrch` | `APP_BUFFER_POOL_TABLE_NAME`、`APP_BUFFER_PROFILE_TABLE_NAME` |
+| `PortsOrch` | SendToIngress 結果及 unknown operation errors |
+| `P4Orch`（獨立實例 → `APPL_DB`） | 所有 P4Orch sub-managers |
+
+**1b. DASH Result Helper** — `dash/dashresulthelper.h` 中的自由函式。寫入結果碼
+（0/1）到 `DPU_APPL_STATE_DB`。無 notification channel。
+
+| Orchagent | Result Tables |
+| --- | --- |
+| `DashOrch` | ENI、appliance、QoS、routing type、ENI route |
+| `DashVnetOrch` | VNET、VNET mapping |
+| `DashRouteOrch` | Route、route rule、route group |
+| `DashTunnelOrch` | Tunnel |
+| `DashPortMapOrch` | Port map、port map range |
+| `DashHaOrch` | HA set、HA scope |
+
+注意：`DashAclOrch` **不使用**此 pattern。
+
+**1c. STATE_DB Table（object lifecycle）** — SAI 成功後直接
+`Table::set()` / `del()` 寫入 `STATE_DB`。宣告 object 存在/移除。
+
+| Orchagent | STATE_DB Table | 宣告內容 |
+| --- | --- | --- |
+| `VRFOrch` | `STATE_VRF_OBJECT_TABLE` | VRF 建立/移除 |
+| `NeighOrch` | `STATE_SYSTEM_NEIGH_TABLE` | Neighbor 已寫入/移除 |
+| `AclOrch` | `STATE_ACL_TABLE_TABLE`、`STATE_ACL_RULE_TABLE` | ACL active/pending |
+| `MirrorOrch` | `STATE_MIRROR_SESSION_TABLE` | Mirror session active/inactive |
+| `CoppOrch` | `STATE_COPP_TRAP_TABLE` | Trap 已寫入 |
+| `TunnelDecapOrch` | `STATE_TUNNEL_DECAP_TABLE` | Tunnel 建立/移除 |
+| `VxlanTunnelOrch` | `STATE_VXLAN_TUNNEL_TABLE` | VXLAN tunnel 建立 |
+| `SwitchOrch` | `STATE_SWITCH_CAPABILITY_TABLE` | 平台能力（init 時） |
+| `PortsOrch` | `STATE_PORT_TABLE`（supported_speeds/fecs） | Port 能力（init 時） |
+| 其他 | `MuxCableOrch`、`StpOrch`、`VNetRouteOrch`、`BufferOrch`、`DebugCounterOrch` 等 | 各種 |
+
+**1d. Silent / No-Report** — 成功時無 DB write，僅失敗時 `SWSS_LOG_ERROR`。
+
+| Orchagent | 程式化內容 |
+| --- | --- |
+| `SflowOrch` | sFlow sessions、per-port sFlow config |
+| `QosOrch` | QoS maps、schedulers、WRED profiles |
+
+### 類別 2：Asynchronous/Proactive
+
+由 `ASIC_DB:NOTIFICATIONS` 經 `NotificationConsumer` 觸發。orch 收到 syncd
+發出的非請求 SAI event 後，更新 `STATE_DB` 中的 runtime operational state。
+從不使用 `ResponsePublisher`（沒有 requester 需要回應）。
+
+| Orchagent | Notification | STATE_DB Table | 更新內容 |
+| --- | --- | --- | --- |
+| `PortsOrch` | `port_state_change` | `STATE_PORT_TABLE` | oper_status、flap count |
+| `PortsOrch` | `port_host_tx_ready` | `STATE_PORT_TABLE` | host_tx_ready |
+| `FdbOrch` | `fdb_event` | `STATE_FDB_TABLE` | MAC learn/age/move |
+| `BfdOrch` | `bfd_session_state_change` | `STATE_BFD_SESSION_TABLE` | Session state |
+| `TwampOrch` | `twamp_session_event` | `STATE_TWAMP_SESSION_TABLE` | Session state + counters |
+| `IcmpOrch` | `icmp_echo_session_state_change` | `STATE_ICMP_ECHO_SESSION_TABLE` | Session state |
+| `MACsecOrch` | `macsec_post_status` | `STATE_FIPS_MACSEC_POST_TABLE` | MACsec POST status |
+| `HFTelOrch` | (telemetry event) | `STATE_HIGH_FREQUENCY_TELEMETRY_SESSION_TABLE` | Telemetry state |
+| `DashHaOrch` | `ha_set_event`、`ha_scope_event` | `DPU_STATE_DB` tables | HA state |
+
+部分 orchagent 同時出現在類別 1 和 2（如 `PortsOrch`、`BfdOrch`、
+`VxlanTunnelOrch`）：sync SAI 成功時寫 STATE_DB，async notification 時也更新。
+
+### 類別 3：Ad-hoc Control Signaling
+
+直接 `NotificationProducer` 用於跨進程協調。非 ASIC notification 觸發，
+非 APPL_DB intent 回應。各為特定 feature 的 one-off 設計。
+
+| 元件 | Channel | DB | 用途 |
+| --- | --- | --- | --- |
+| `NatOrch` | `SETTIMEOUTNAT` | `APPL_DB` | 通知 `natsyncd` set/clear conntrack timeouts |
+| `SwitchOrch` | `RESTARTCHECKREPLY` | `APPL_DB` | 回覆 warm restart 就緒狀態 |
+
+### 狀態回報總覽
+
+| 類別 | 觸發 | 目標 | 工具 |
+| :--- | :--- | :--- | :--- |
+| 1a. ResponsePublisher | APPL_DB intent → SAI return | `APPL_STATE_DB` + channel | `ResponsePublisher::publish()` |
+| 1b. DASH Result | APPL_DB intent → SAI return | `DPU_APPL_STATE_DB` | `writeResultToDB()` |
+| 1c. STATE_DB (lifecycle) | APPL_DB intent → SAI return | `STATE_DB` | `Table::set()` / `del()` |
+| 1d. Silent | APPL_DB intent → SAI return | 無 | `SWSS_LOG` |
+| 2. Async state update | `ASIC_DB:NOTIFICATIONS` | `STATE_DB` | `Table::set()` / `hset()` |
+| 3. Control signaling | Feature-specific | Redis channel | `NotificationProducer::send()` |
+
 ## 總結規則
 
 - `CONFIG_DB` source rows 通常是 `Table` producer 和

@@ -327,6 +327,124 @@ syncd flex counter logic
 | counter mappings | `FlowCounterRouteOrch` / `Table` | `COUNTERS_DB:COUNTERS_ROUTE_NAME_MAP`, `COUNTERS_ROUTE_TO_PATTERN_MAP` | CLI/display / `Table` or direct Redis read |
 | counter stats | syncd flex counter polling / `Table`-style hash write | `COUNTERS_DB:COUNTERS:<counter_oid>` | CLI/display / `Table` or direct Redis read |
 
+## OrchAgent Status Reporting Mechanisms
+
+After an orchagent processes intent or receives an event, it may report results
+through several mechanisms. These fall into three categories based on trigger
+source and reporting purpose.
+
+```text
+OrchAgent Status Reporting
+├── 1. Synchronous/Reactive (APPL_DB intent → SAI → report result)
+│   ├── ResponsePublisher → APPL_STATE_DB + response channel
+│   ├── DASH Result Helper → DPU_APPL_STATE_DB
+│   ├── STATE_DB Table → STATE_DB (object lifecycle announcement)
+│   └── Silent (log only)
+│
+├── 2. Asynchronous/Proactive (ASIC_DB:NOTIFICATIONS → handler → state update)
+│   └── STATE_DB Table → STATE_DB (runtime operational state)
+│
+└── 3. Ad-hoc Control Signaling (inter-process coordination)
+    └── NotificationProducer → specific channel
+```
+
+### Category 1: Synchronous/Reactive
+
+Triggered by APPL_DB (or CONFIG_DB) intent via `ConsumerStateTable`. The orch
+executes a SAI API call, receives the synchronous return status, and reports.
+
+**1a. ResponsePublisher** — dual-channel: notification on
+`APPL_DB_<table>_RESPONSE_CHANNEL` + persistent state to `APPL_STATE_DB`.
+Never called from async notification handlers.
+
+| Orchagent | Table / Usage |
+| --- | --- |
+| `RouteOrch` | `APP_ROUTE_TABLE_NAME` — buffered, `m_directDbWrite = true` |
+| `BufferOrch` | `APP_BUFFER_POOL_TABLE_NAME`, `APP_BUFFER_PROFILE_TABLE_NAME` |
+| `PortsOrch` | SendToIngress results and unknown operation errors |
+| `P4Orch` (separate instance → `APPL_DB`) | All P4Orch sub-managers |
+
+**1b. DASH Result Helper** — free functions in `dash/dashresulthelper.h`.
+Writes result code (0/1) to `DPU_APPL_STATE_DB`. No notification channel.
+
+| Orchagent | Result Tables |
+| --- | --- |
+| `DashOrch` | ENI, appliance, QoS, routing type, ENI route |
+| `DashVnetOrch` | VNET, VNET mapping |
+| `DashRouteOrch` | Route, route rule, route group |
+| `DashTunnelOrch` | Tunnel |
+| `DashPortMapOrch` | Port map, port map range |
+| `DashHaOrch` | HA set, HA scope |
+
+Note: `DashAclOrch` does **not** use this pattern.
+
+**1c. STATE_DB Table (object lifecycle)** — direct `Table::set()` / `del()` on
+`STATE_DB` immediately after SAI success. Announces object existence/removal.
+
+| Orchagent | STATE_DB Table | What it announces |
+| --- | --- | --- |
+| `VRFOrch` | `STATE_VRF_OBJECT_TABLE` | VRF created/removed |
+| `NeighOrch` | `STATE_SYSTEM_NEIGH_TABLE` | Neighbor programmed/removed |
+| `AclOrch` | `STATE_ACL_TABLE_TABLE`, `STATE_ACL_RULE_TABLE` | ACL active/pending |
+| `MirrorOrch` | `STATE_MIRROR_SESSION_TABLE` | Mirror session active/inactive |
+| `CoppOrch` | `STATE_COPP_TRAP_TABLE` | Trap programmed |
+| `TunnelDecapOrch` | `STATE_TUNNEL_DECAP_TABLE` | Tunnel created/removed |
+| `VxlanTunnelOrch` | `STATE_VXLAN_TUNNEL_TABLE` | VXLAN tunnel created |
+| `SwitchOrch` | `STATE_SWITCH_CAPABILITY_TABLE` | Platform capabilities (init) |
+| `PortsOrch` | `STATE_PORT_TABLE` (supported_speeds/fecs) | Port capabilities (init) |
+| Others | `MuxCableOrch`, `StpOrch`, `VNetRouteOrch`, `BufferOrch`, `DebugCounterOrch`, etc. | Various |
+
+**1d. Silent / No-Report** — no DB write on success, only `SWSS_LOG_ERROR` on
+failure.
+
+| Orchagent | What it programs |
+| --- | --- |
+| `SflowOrch` | sFlow sessions, per-port sFlow config |
+| `QosOrch` | QoS maps, schedulers, WRED profiles |
+
+### Category 2: Asynchronous/Proactive
+
+Triggered by `ASIC_DB:NOTIFICATIONS` via `NotificationConsumer`. The orch
+receives an unsolicited SAI event from syncd and updates runtime operational
+state in `STATE_DB`. Never uses `ResponsePublisher` (no requester to respond to).
+
+| Orchagent | Notification | STATE_DB Table | What it updates |
+| --- | --- | --- | --- |
+| `PortsOrch` | `port_state_change` | `STATE_PORT_TABLE` | oper_status, flap count |
+| `PortsOrch` | `port_host_tx_ready` | `STATE_PORT_TABLE` | host_tx_ready |
+| `FdbOrch` | `fdb_event` | `STATE_FDB_TABLE` | MAC learn/age/move |
+| `BfdOrch` | `bfd_session_state_change` | `STATE_BFD_SESSION_TABLE` | Session state |
+| `TwampOrch` | `twamp_session_event` | `STATE_TWAMP_SESSION_TABLE` | Session state + counters |
+| `IcmpOrch` | `icmp_echo_session_state_change` | `STATE_ICMP_ECHO_SESSION_TABLE` | Session state |
+| `MACsecOrch` | `macsec_post_status` | `STATE_FIPS_MACSEC_POST_TABLE` | MACsec POST status |
+| `HFTelOrch` | (telemetry event) | `STATE_HIGH_FREQUENCY_TELEMETRY_SESSION_TABLE` | Telemetry state |
+| `DashHaOrch` | `ha_set_event`, `ha_scope_event` | `DPU_STATE_DB` tables | HA state |
+
+Some orchagents appear in both Category 1 and 2 (e.g., `PortsOrch`, `BfdOrch`,
+`VxlanTunnelOrch`): they write STATE_DB on sync SAI success AND update it on
+async notifications.
+
+### Category 3: Ad-hoc Control Signaling
+
+Direct `NotificationProducer` for inter-process coordination. Not triggered by
+ASIC notifications. Not a response to APPL_DB intent. One-off designs.
+
+| Component | Channel | DB | Purpose |
+| --- | --- | --- | --- |
+| `NatOrch` | `SETTIMEOUTNAT` | `APPL_DB` | Notify `natsyncd` to set/clear conntrack timeouts |
+| `SwitchOrch` | `RESTARTCHECKREPLY` | `APPL_DB` | Reply warm restart readiness |
+
+### Status Reporting Summary
+
+| Category | Trigger | Target | Tooling |
+| :--- | :--- | :--- | :--- |
+| 1a. ResponsePublisher | APPL_DB intent → SAI return | `APPL_STATE_DB` + channel | `ResponsePublisher::publish()` |
+| 1b. DASH Result | APPL_DB intent → SAI return | `DPU_APPL_STATE_DB` | `writeResultToDB()` |
+| 1c. STATE_DB (lifecycle) | APPL_DB intent → SAI return | `STATE_DB` | `Table::set()` / `del()` |
+| 1d. Silent | APPL_DB intent → SAI return | None | `SWSS_LOG` |
+| 2. Async state update | `ASIC_DB:NOTIFICATIONS` | `STATE_DB` | `Table::set()` / `hset()` |
+| 3. Control signaling | Feature-specific | Redis channel | `NotificationProducer::send()` |
+
 ## Summary Rules
 
 - `CONFIG_DB` source rows are usually `Table` producer and
